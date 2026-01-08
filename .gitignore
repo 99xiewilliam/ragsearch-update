@@ -1,0 +1,63 @@
+# ===== Python caches / artifacts =====
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+
+# ===== Virtualenvs =====
+.venv/
+venv/
+ENV/
+env/
+.env/
+.env.*
+
+# ===== Packaging / build =====
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ===== Linters / typecheck / tests =====
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+htmlcov/
+
+# ===== IDE / OS =====
+.vscode/
+.idea/
+.DS_Store
+
+# ===== Logs (can be huge) =====
+*.log
+
+# ===== Experiment outputs (common names) =====
+outputs/
+output/
+out/
+runs/
+run/
+results/
+checkpoints/
+checkpoints_*/
+wandb/
+mlruns/
+tensorboard/
+tb/
+
+# ===== Data / model files (optional, keep repo light) =====
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.npz
+*.npy
+*.parquet
+*.feather
+*.pkl
+*.pickle
+
+
