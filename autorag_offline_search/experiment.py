@@ -15,7 +15,7 @@ from .eval import evaluate_config
 from .metrics import MetricsConfig
 from .plugins.loader import load_object
 from .plugins.protocols import RagFactory
-from .search_space import BinarySpace, SearchSpace, config_to_str
+from .search_space import SearchSpace, config_to_str
 
 def _worker_run_algo(
     gpu_id: Optional[int],
@@ -25,10 +25,6 @@ def _worker_run_algo(
     """Helper to run a single algorithm in a separate process with a specific GPU."""
     if gpu_id is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-        # Force the config to use the assigned device if it's a local run
-        if "config_inject" in kwargs and kwargs["config_inject"]:
-            kwargs["config_inject"]["embedder_device"] = "cuda"
-            kwargs["config_inject"]["reranker_device"] = "cuda"
     
     result = run_one_algorithm(algo_name, **kwargs)
     return algo_name, result
@@ -50,6 +46,7 @@ def run_one_algorithm(
     train_trials: int,
     seed: int,
     grpo_group_size: int = 0,
+    config_base: Optional[Dict] = None,
     config_inject: Optional[Dict] = None,
     verbose: bool = False,
     log_every: int = 1,
@@ -73,10 +70,12 @@ def run_one_algorithm(
 
     def objective(cfg: Dict) -> Trial:
         nonlocal seen, best_so_far
-        # Always ensure LLM and CUDA are used if using BinarySpace
-        if hasattr(space, "fixed_params"):
-            cfg = {**space.fixed_params(), **cfg}
-        
+        # Merge order (pinning):
+        # - cfg (from search space / algorithm proposal)
+        # - config_base (YAML / user-provided overrides that should take precedence)
+        # - config_inject (runtime injection: dataset_id/cache_dir/CLI overrides)
+        if config_base:
+            cfg = {**cfg, **config_base}
         if config_inject:
             cfg = {**cfg, **config_inject}
         res, stats = evaluate_config(
@@ -319,18 +318,16 @@ def run_dataset(
     train_trials: int,
     metrics_cfg: MetricsConfig,
     seed: int = 42,
-    space_bits: int = 0,
     grpo_group_size: int = 0,
     rag_plugin: str = "",
     space_plugin: str = "",
     cache_dir: str = "",
     llm_base_url: str = "",
-    openai_base_url: str = "",
-    openai_api_key: str = "",
-    gemini_api_key: str = "",
-    embedder_backend: str = "",
     embedder_model: str = "",
-    embedder_device: str = "",
+    pipeline: str = "",
+    generator_model: str = "",
+    generator_max_tokens: int = 0,
+    config_base: Optional[Dict] = None,
     verbose: bool = False,
     log_every: int = 1,
     show_eval_progress: bool = False,
@@ -347,9 +344,10 @@ def run_dataset(
     if rag_plugin:
         rag_factory = load_object(rag_plugin)
     else:
-        from .plugins.rag_baseline import TfidfRag
+        # New default: unified modular RAG (common/graph/multimodal).
+        from .plugins.rag import UnifiedRag
 
-        rag_factory = TfidfRag
+        rag_factory = UnifiedRag
 
     if space_plugin:
         space = load_object(space_plugin)
@@ -357,7 +355,7 @@ def run_dataset(
         if isinstance(space, type):
             space = space()
     else:
-        space = BinarySpace(bits=int(space_bits)) if (space_bits and int(space_bits) > 0) else SearchSpace()
+        space = SearchSpace()
 
     results: Dict[str, Dict] = {}
     inject = {
@@ -368,19 +366,14 @@ def run_dataset(
         inject["verbose"] = True
     if llm_base_url:
         inject["llm_base_url"] = llm_base_url
-    if openai_base_url:
-        inject["openai_base_url"] = openai_base_url
-    if openai_api_key:
-        inject["openai_api_key"] = openai_api_key
-    if gemini_api_key:
-        inject["gemini_api_key"] = gemini_api_key
-    # Allow forcing local/GPU embedder without changing the search space.
-    if embedder_backend:
-        inject["embedder_backend"] = embedder_backend
+    if pipeline:
+        inject["pipeline"] = str(pipeline)
     if embedder_model:
         inject["embedder_model"] = embedder_model
-    if embedder_device:
-        inject["embedder_device"] = embedder_device
+    if generator_model:
+        inject["generator_model"] = str(generator_model)
+    if generator_max_tokens and int(generator_max_tokens) > 0:
+        inject["generator_max_tokens"] = int(generator_max_tokens)
 
     # Multi-GPU Parallel execution
     # Determine GPU IDs to use
@@ -404,6 +397,7 @@ def run_dataset(
             "train_trials": train_trials,
             "seed": seed,
             "grpo_group_size": grpo_group_size,
+            "config_base": config_base,
             "config_inject": inject,
             "verbose": verbose,
             "log_every": log_every,
@@ -432,6 +426,7 @@ def run_dataset(
                     "train_trials": train_trials,
                     "seed": seed,
                     "grpo_group_size": grpo_group_size,
+                    "config_base": config_base,
                     "config_inject": inject,
                     "verbose": verbose,
                     "log_every": log_every,
@@ -461,6 +456,7 @@ def run_dataset(
                 train_trials=train_trials,
                 seed=seed,
                 grpo_group_size=grpo_group_size,
+                config_base=config_base,
                 config_inject=inject,
                 verbose=verbose,
                 log_every=log_every,
@@ -469,35 +465,16 @@ def run_dataset(
                 dump_val_limit=int(dump_val_limit) if dump_val_limit else 0,
             )
 
-    def _sanitize(cfg: Dict) -> Dict:
-        cfg = dict(cfg)
-        for k in list(cfg.keys()):
-            lk = k.lower()
-            if "api_key" in lk or lk in {"openai_api_key", "gemini_api_key"}:
-                cfg[k] = "***MASKED***"
-        return cfg
-
     summary = {
         "dataset_dir": dataset_dir,
         "algos": list(algos),
         "train_trials_budget": train_trials,
         "metrics_weights": metrics_cfg.weights,
         "bertscore_model": metrics_cfg.bertscore_model,
-        "space_bits": int(space_bits) if space_bits else None,
-        "rag_plugin": rag_plugin or "autorag_offline_search.plugins.rag_baseline:TfidfRag",
+        "rag_plugin": rag_plugin or "autorag_offline_search.plugins.rag:UnifiedRag",
         "space_plugin": space_plugin or None,
         "results": results,
     }
-
-    # mask secrets inside saved results (configs appear inside results dict)
-    for a in results.keys():
-        results[a]["train_trials"] = [
-            {**t, "config": _sanitize(t["config"])} for t in results[a].get("train_trials", [])
-        ]
-        if "best_train" in results[a]:
-            results[a]["best_train"]["config"] = _sanitize(results[a]["best_train"]["config"])
-        if "validation" in results[a]:
-            results[a]["validation"]["config"] = _sanitize(results[a]["validation"]["config"])
 
     with open(os.path.join(out_dir, "results.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)

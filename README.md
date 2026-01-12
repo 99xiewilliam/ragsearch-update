@@ -24,22 +24,52 @@
 - `doc_id`
 - `contents`
 
-### Pipeline（可搜索空间示例）
+### Pipeline（重构后的三大类）
 
-- **chunk_size**（word-based）：可设为任意候选（支持二元空间实验，例如 `128/512`）
-- **chunk_overlap**：`0 / 32`（并保证 overlap < chunk_size）
-- **retriever_topk**：可设为任意候选（支持二元空间实验，例如 `3/10`）
-- **generator**（不依赖外部 LLM，保证离线可复现）：
-  - `best_sentence`: 从 topk chunks 中挑选与 query 最相近的句子作为回答
-  - `concat_chunks`: 拼接 topk chunks 的前若干词作为回答
+项目现在按三类 pipeline 组织（由配置 `pipeline` 选择）：
 
-可选二元扩展超参（用于把搜索空间扩到 \(2^6\sim 2^{14}\)）：
-- `ngram_range`：`(1,1)` vs `(1,2)`
-- `stop_words`：`english` vs `none`
-- `max_features`：`20k` vs `200k`
-- `concat_word_limit`：`80` vs `200`
-- `min_chunk_words`：`4` vs `16`
-- `lowercase`：`True` vs `False`
+- **common**：常用 RAG（rewriter → chunking → embedding → retriever → reranker → pruner → generator）
+- **graph**：GraphRAG（目前为骨架：结构已就位，后续可在此基础上加入图构建/扩展检索）
+- **multimodal**：多模态 RAG（目前为骨架：结构已就位，后续可从 `Doc.metadata` 引入图像/音频等）
+
+### 可选组件与超参（只保留你指定的那些）
+
+- **rewriter**
+  - `rewriter_enabled`: 是否启用
+  - `rewriter_model`: `qwen3|llama3`（也支持直接传模型名/路径）
+  - `rewriter_prompt_id`: `rewrite_v1|rewrite_v2_keywords`
+  - `rewriter_max_tokens`
+- **chunking**
+  - `chunking_enabled`: 是否启用（关闭则退化为“每个 doc 当成一个 chunk”）
+  - `chunking_method`: `semantic|token`
+  - `chunk_size`
+  - `chunk_overlap`
+  - `min_chunk_words`
+- **embedding**
+  - `embedding_enabled`: 是否启用（关闭时要求 `retriever=bm25`）
+  - `embedder_model`: 支持多选（默认用 CUDA，失败自动回退 CPU；不作为超参暴露）
+- **retriever**
+  - `retriever`: `cosine|bm25|hybrid`
+  - `retriever_topk`
+  - `hybrid_alpha`（仅 `hybrid` 生效）
+- **reranker**
+  - `reranker_enabled`: 是否启用（关闭则不 rerank）
+  - `reranker_model`: `none` 或 cross-encoder 模型名
+  - `rerank_topk`
+- **pruner**
+  - `pruner_enabled`
+  - `pruner_model`: `qwen3|llama3`
+  - `pruner_prompt_id`: `prune_v1`
+  - `pruner_max_tokens`
+- **generator（固定 prompt，不作为超参）**
+  - `generator_model`：默认 `qwen3`（可通过 CLI 覆盖）
+  - `generator_max_tokens`：可通过 CLI 覆盖
+
+补充（pipeline 专属开关，不引入额外超参逻辑）：
+- **graph**
+  - `graph_expand_enabled`: 是否启用 1-hop 图扩展
+- **multimodal**
+  - `multimodal_metadata_enabled`: 是否把 `Doc.metadata` 中的 caption/OCR 等文本拼入检索语料
 
 ### 算法
 
@@ -69,6 +99,47 @@ python -m autorag_offline_search.cli \
   --dataset_dir /home/xwh/three_dataset_sample_split/bioasq \
   --train_trials 10 \
   --metrics_weights "rougeL:0.34,bertscore_f1:0.33,meteor:0.33" \
+  --llm_base_url http://localhost:9000/v1 \
+  --generator_model qwen3 \
+  --generator_max_tokens 128 \
+  --out_dir /home/xwh/autorag_offline_search_runs/bioasq
+```
+
+注意：当前版本 **强制依赖 vLLM/OpenAI-compatible endpoint**，必须提供 `llm_base_url`，并且 pipeline 总会走 generator（固定 prompt）。
+
+推荐：把配置写进 YAML（更清晰、更容易复现），然后用 `--config` 加载：
+
+```yaml
+# config.yaml（示例：用于“钉死/覆盖”某些配置；未写的字段仍可由搜索空间生成）
+pipeline: common
+rewriter_enabled: false
+chunking_enabled: true
+chunking_method: token
+chunk_size: 256
+chunk_overlap: 64
+min_chunk_words: 8
+
+embedding_enabled: true
+embedder_model: BAAI/bge-m3
+retriever: hybrid
+retriever_topk: 10
+hybrid_alpha: 0.5
+
+reranker_enabled: false
+pruner_enabled: false
+
+generator_model: qwen3
+generator_max_tokens: 128
+```
+
+然后运行：
+
+```bash
+python -m autorag_offline_search.cli \
+  --dataset_dir /home/xwh/three_dataset_sample_split/bioasq \
+  --train_trials 10 \
+  --config /path/to/config.yaml \
+  --llm_base_url http://localhost:9000/v1 \
   --out_dir /home/xwh/autorag_offline_search_runs/bioasq
 ```
 
@@ -83,112 +154,19 @@ python -m autorag_offline_search.cli \
 
 就可以通过 `--rag_plugin module:Class` 接入。
 
-项目内置了两个示例：
-
-- 默认 baseline（TF-IDF）：
+项目内置默认插件（新架构入口）：
 
 ```bash
---rag_plugin autorag_offline_search.plugins.rag_baseline:TfidfRag
+--rag_plugin autorag_offline_search.plugins.rag:UnifiedRag
 ```
 
-- 自定义变体：字符 n-gram 检索（对名字/拼写更鲁棒）：
+（历史示例里曾包含多个旧插件；已随重构移除。）
 
-```bash
---rag_plugin autorag_offline_search.plugins.rag_variant:CharNgramRag
-```
-
-完整示例（对比同一搜索算法在两套 RAG 上的结果）：
-
-```bash
-python -m autorag_offline_search.cli \
-  --dataset_dir /home/xwh/three_dataset_sample_split/bioasq \
-  --train_trials 10 \
-  --algo random \
-  --rag_plugin autorag_offline_search.plugins.rag_variant:CharNgramRag \
-  --out_dir /home/xwh/autorag_offline_search_runs/bioasq_charngram
-```
-
-### 可插拔：自定义搜索空间
+### 可插拔：自定义搜索空间（可选）
 
 你可以通过 `--space_plugin module:ObjOrClass` 替换搜索空间；对象/类需要提供：
 
 - `all_configs()`（给 random/UCB/TS 用）
 - `space_dict()`（给 greedy/TPE/GRPO 用）
 
-项目内置示例：
-
-- 固定 \(2^{14}\) 二元空间：
-
-```bash
---space_plugin autorag_offline_search.plugins.spaces:Bits14Space
-```
-
-### 2^bits 搜索空间规模实验
-
-用 `--space_bits` 构造严格的二元空间（总配置数 \(=2^{bits}\)），例如：
-
-```bash
-python -m autorag_offline_search.cli \
-  --dataset_dir /home/xwh/three_dataset_sample_split/bioasq \
-  --space_bits 10 \
-  --train_trials 10 \
-  --metrics_weights "rougeL:0.34,bertscore_f1:0.33,meteor:0.33" \
-  --out_dir /home/xwh/autorag_offline_search_runs/bioasq_bits10
-```
-
-### 组件级 + 超参级混合搜索（本地 / OpenAI 可独立控制）
-
-你可以使用组件化 RAG 插件 `ComponentRag`，它支持：
-
-- Chunker：`fixed_window` / `semantic_split`
-- Embedder：本地 `sentence-transformers` 或 OpenAI embedding API（通过 `embedder_backend` 控制）
-- Retriever：`vector_topk` / `hybrid`（BM25+vector）
-- Reranker：`none` / `cross_encoder`
-- Generator：`best_sentence` / `concat_chunks`
-- LLM Generator（可选）：本地 vLLM（OpenAI 兼容）/ OpenAI / Gemini（通过 `llm_backend` 控制）
-- Prompt（可搜索超参）：`prompt_id=factoid_short | evidence_then_answer`（可扩展成更多模板）
-
-通过 CLI 选择：
-
-```bash
-python -m autorag_offline_search.cli \
-  --dataset_dir /home/xwh/three_dataset_sample_split/bioasq \
-  --space_bits 14 \
-  --train_trials 40 \
-  --rag_plugin autorag_offline_search.plugins.component_rag:ComponentRag \
-  --cache_dir /home/xwh/autorag_offline_search_runs/.cache \
-  --llm_base_url http://localhost:9000/v1 \
-  --out_dir /home/xwh/autorag_offline_search_runs/bioasq_component_bits14
-```
-
-说明：
-- `--space_bits` 使用的是“二元组件+超参混合空间”，每一位都是真正影响行为的 knob（见 `BinarySpace`）。
-- OpenAI embedding/LLM 需要设置 `OPENAI_API_KEY`；并且将某些 config 中的 `embedder_backend` 或 `llm_backend` 选到 `openai/openai_compat` 才会调用。
-- 本地 vLLM：设置 `llm_backend=openai_compat`，并提供 `llm_base_url`（例如 `http://localhost:9000/v1`）以及 `llm_model`（可用本地模型路径或 vLLM 里注册的模型名）。
-- 如果你要提升 BioASQ 这类 factoid 的 ROUGE-L/METEOR：建议优先让搜索空间里包含 `prompt_id=factoid_short`（强制输出短答案）。
-- Gemini：设置 `llm_backend=gemini` 且提供 `GEMINI_API_KEY`（或 `GOOGLE_API_KEY`）以及 `llm_model`（例如 `gemini-1.5-flash`）。
-
-### 一键跑：三数据集 × 多空间规模 × 多算法（自动调 train_trials）
-
-你想要的对比可以用 `--sweep_bits` 一次跑完，并且 `train_trials` 会随空间规模自动增长（默认线性：`5*bits`，并且 min/max 截断）。
-
-```bash
-python -m autorag_offline_search.cli \
-  --all_datasets_root /home/xwh/three_dataset_sample_split \
-  --sweep_bits "4,6,8,10,12,14" \
-  --algo "random,greedy,tpe,ucb1,ts,grpo" \
-  --metrics_weights "rougeL:0.34,bertscore_f1:0.33,meteor:0.33" \
-  --auto_trials_mode linear \
-  --auto_trials_scale 5 \
-  --auto_trials_min 10 \
-  --auto_trials_max 80 \
-  --rag_plugin autorag_offline_search.plugins.component_rag:ComponentRag \
-  --cache_dir /home/xwh/autorag_offline_search_runs/.cache \
-  --out_dir /home/xwh/autorag_offline_search_runs/sweep_all
-```
-
-输出：
-- `sweep_all/sweep.tsv`：总对比表（dataset/bits/algo → validation 指标与 best_config）
-- `sweep_all/<dataset>/bitsX/`：每个子实验的 `results.json` 与 `summary.tsv`
-
-
+（旧的 bits 空间实验 / sweep 功能已移除；如果需要可以在新架构上再加回一个“预算调度 + sweep”包装层。）
