@@ -1,24 +1,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Sequence
 
 import optuna
 
-from .base import ObjectiveFn, Trial
+from .base import SearchInput, SearchOutput, Trial, best_trial, evaluate
 
 
 @dataclass
 class TPESearch:
     name: str = "tpe"
 
-    def __init__(self, space: Dict[str, Sequence], seed: int = 42):
-        self.space = {k: list(v) for k, v in space.items()}
-        self.seed = seed
+    def __init__(self, seed: int = 42):
+        self.seed = int(seed)
 
-    def search(self, *, objective: ObjectiveFn, budget: int) -> List[Trial]:
-        if budget <= 0:
-            return []
+    def run(self, inp: SearchInput) -> SearchOutput:
+        if int(inp.budget) <= 0:
+            return SearchOutput(algo=self.name, trials=[], best=None)
+        if not inp.space:
+            raise ValueError("TPESearch requires inp.space")
+
+        space = {k: list(v) for k, v in inp.space.items()}
 
         sampler = optuna.samplers.TPESampler(seed=self.seed, multivariate=True)
         study = optuna.create_study(direction="maximize", sampler=sampler)
@@ -27,17 +30,14 @@ class TPESearch:
 
         def _objective(trial: optuna.Trial) -> float:
             cfg: Dict = {}
-            for k, choices in self.space.items():
+            for k, choices in space.items():
                 cfg[k] = trial.suggest_categorical(k, choices)
-            # validity guard
-            if "chunk_overlap" in cfg and "chunk_size" in cfg:
-                if int(cfg["chunk_overlap"]) >= int(cfg["chunk_size"]):
-                    return -1.0
-            tr = objective(cfg)
+            tr = evaluate(inp, cfg)
+            if tr is None:
+                return -1.0
             trials.append(tr)
-            return tr.reward
+            return float(tr.reward)
 
-        study.optimize(_objective, n_trials=budget, show_progress_bar=False)
-        return trials
+        study.optimize(_objective, n_trials=int(inp.budget), show_progress_bar=False)
 
-
+        return SearchOutput(algo=self.name, trials=trials, best=best_trial(trials))

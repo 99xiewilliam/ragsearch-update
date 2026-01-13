@@ -61,6 +61,14 @@ def _parse_args() -> argparse.Namespace:
     # Common pipeline knobs (keep small for a quick smoke run)
     p.add_argument("--rewriter_enabled", action="store_true", help="Enable rewriter. Default off for stability.")
     p.add_argument("--pruner_enabled", action="store_true", help="Enable pruner. Default off for stability.")
+    p.add_argument("--reranker_enabled", action="store_true", help="Enable reranker. Default off to avoid downloading models.")
+    p.add_argument(
+        "--reranker_model",
+        type=str,
+        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        help="Cross-encoder reranker model name (HuggingFace).",
+    )
+    p.add_argument("--rerank_topk", type=int, default=5, help="Rerank top-k docs from retrieved candidates.")
     p.add_argument("--retriever", type=str, default="cosine", choices=["cosine", "bm25", "hybrid"])
     p.add_argument("--retriever_topk", type=int, default=5)
     p.add_argument("--embedder_model", type=str, default="BAAI/bge-m3")
@@ -129,7 +137,9 @@ def main() -> None:
         "generator_model": str(args.generator_model),
         "generator_max_tokens": int(args.generator_max_tokens),
         # keep it fast by default
-        "reranker_enabled": False,
+        "reranker_enabled": bool(args.reranker_enabled),
+        "reranker_model": str(args.reranker_model),
+        "rerank_topk": int(args.rerank_topk),
         "embedding_enabled": True if args.retriever != "bm25" else False,
         "chunking_enabled": True,
     }

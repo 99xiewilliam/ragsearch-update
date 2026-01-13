@@ -62,7 +62,7 @@
   - `pruner_prompt_id`: `prune_v1`
   - `pruner_max_tokens`
 - **generator（固定 prompt，不作为超参）**
-  - `generator_model`：默认 `qwen3`（可通过 CLI 覆盖）
+  - `generator_model`：默认 `qwen3`（可通过 YAML/CLI 覆盖；multimodal 也一样）
   - `generator_max_tokens`：可通过 CLI 覆盖
 
 补充（pipeline 专属开关，不引入额外超参逻辑）：
@@ -90,6 +90,57 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### 模型准备（必需 / 可选）
+
+本项目的定位是“在同一套 RAG pipeline 下，对比不同搜索算法/组合效果”，所以为了让外部用户**一键复现**，建议把模型依赖分成两类：
+
+- **必需（所有 pipeline 都需要）**
+  - **vLLM/OpenAI-compatible endpoint**：用于 `generator`（以及你若开启了 `rewriter/pruner` 也会走同一个 endpoint）
+  - 你需要自己启动一个 vLLM 服务，并把 `--llm_base_url` 指到它（例如 `http://localhost:9000/v1`）
+  - 本仓库默认示例使用本地模型路径：`/home/xwh/models/Qwen3-4B-Instruct-2507`（你也可以换成任何 vLLM 已加载的模型 id/path）
+
+- **可选（取决于你是否开启模块 / 是否跑 multimodal）**
+  - **Text embedding（cosine/hybrid 检索需要）**
+    - `BAAI/bge-m3`
+    - `intfloat/e5-large-v2`
+  - **Text reranker（reranker_enabled=true 时需要）**
+    - `cross-encoder/ms-marco-MiniLM-L-6-v2`
+  - **Multimodal embedding / reranker（multimodal pipeline + embedding/rerank 时需要）**
+    - `Qwen/Qwen3-VL-Embedding-2B`
+    - `Qwen/Qwen3-VL-Embedding-8B`
+    - `Qwen/Qwen3-VL-Reranker-2B`
+    - `Qwen/Qwen3-VL-Reranker-8B`
+    - CLIP（用于最小可用的 image+text embedding 支持）：`openai/clip-vit-base-patch32`
+
+#### 一键下载（HuggingFace）
+
+如果你的环境需要 HuggingFace 模型下载（embedding / reranker / CLIP），可以用仓库内脚本批量下载到本地：
+
+```bash
+# 如果模型需要权限/同意协议，请先设置：
+# export HF_TOKEN=xxxx
+
+python scripts/download_hf_models.py \
+  --models "Qwen/Qwen3-VL-Reranker-2B" \
+  --models "Qwen/Qwen3-VL-Reranker-8B" \
+  --models "Qwen/Qwen3-VL-Embedding-2B" \
+  --models "Qwen/Qwen3-VL-Embedding-8B" \
+  --models "openai/clip-vit-base-patch32" \
+  --local_root /home/xwh/models/hf \
+  --cache_dir /home/xwh/.cache/huggingface \
+  --max_retries 8
+```
+
+#### PyTorch（Blackwell / sm_120 用户注意）
+
+如果你是 Blackwell（`sm_120`）显卡，建议先安装 **CUDA 12.8+ 的 PyTorch**，否则会看到 `sm_120 is not compatible...`。
+我们把 torch 从 `requirements.txt` 中移除了，避免 pip/conda “不小心降级”你的 torch。你可以先装对应 torch，再安装项目依赖：
+
+```bash
+pip install -r requirements-torch-cu128.txt
+pip install -r requirements.txt
+```
+
 ### 运行
 
 对单个数据集做算法对比（默认 train 10 次 trial，validation 评 1 次）：
@@ -106,6 +157,18 @@ python -m autorag_offline_search.cli \
 ```
 
 注意：当前版本 **强制依赖 vLLM/OpenAI-compatible endpoint**，必须提供 `llm_base_url`，并且 pipeline 总会走 generator（固定 prompt）。
+
+补充：你可以按 pipeline 选择不同的 generator 模型（仍然是固定 prompt，只换模型）。例如 multimodal 想用 VL 指令模型：
+
+```bash
+python -m autorag_offline_search.cli \
+  --dataset_dir /path/to/dataset \
+  --train_trials 1 \
+  --pipeline multimodal \
+  --llm_base_url http://localhost:9000/v1 \
+  --generator_model /home/xwh/models/Qwen3-VL-4B-Instruct \
+  --out_dir /tmp/out
+```
 
 推荐：把配置写进 YAML（更清晰、更容易复现），然后用 `--config` 加载：
 
@@ -171,3 +234,74 @@ python -m autorag_offline_search.cli \
 - `space_dict()`（给 greedy/TPE/GRPO 用）
 
 （旧的 bits 空间实验 / sweep 功能已移除；如果需要可以在新架构上再加回一个“预算调度 + sweep”包装层。）
+
+### 可插拔：自定义搜索算法（推荐）
+
+你的方法如果想在本框架下复现/对比，只需要实现一个“算法类”，遵循统一的 **输入/输出标准**，就能被 `autorag_offline_search` 调用并在相同 RAG pipeline + 指标下评测。
+
+- **输入标准**：`autorag_offline_search.algorithms.base.SearchInput`
+  - `objective(cfg: Dict) -> Trial`：评测函数（内部会跑 RAG + metrics，返回 reward/metrics/seconds）
+  - `budget: int`：最多评测多少个 config（每调用一次 objective 消耗 1）
+  - `seed: int`：随机种子提示
+  - `space: Dict[str, Sequence] | None`：离散搜索空间（给 TPE/GRPO/greedy 这类算法）
+  - `configs: List[Dict] | None`：预枚举的 configs（给 random/UCB/TS 这类把 config 当 arm 的算法）
+- **输出标准**：`autorag_offline_search.algorithms.base.SearchOutput`
+  - `trials: List[Trial]`：所有评测过的 trial
+  - `best: Trial | None`：最优 trial（不填也可以，框架会自动从 trials 里挑）
+
+最小示例（新接口，推荐）：
+
+```python
+from dataclasses import dataclass
+from autorag_offline_search.algorithms.base import SearchAlgorithm, SearchInput, SearchOutput, best_trial
+
+
+@dataclass
+class MyAlgo:
+    name: str = "my_algo"
+
+    def run(self, inp: SearchInput) -> SearchOutput:
+        # 例：最简单的“只评测一次空 config”
+        tr = inp.objective({})
+        return SearchOutput(algo=self.name, trials=[tr], best=best_trial([tr]))
+```
+
+运行时，把它作为 `--algo` 传入（可与内置算法混用，用逗号分隔）：
+
+```bash
+python -m autorag_offline_search.cli \
+  --dataset_dir /path/to/dataset \
+  --out_dir /tmp/out \
+  --train_trials 10 \
+  --config /path/to/config.yaml \
+  --llm_base_url http://localhost:9000/v1 \
+  --algo random,my_pkg.my_algo:MyAlgo
+```
+
+（说明：本项目只接受新接口 `run(SearchInput)->SearchOutput`，不再保留旧接口兼容层，以保证代码简洁易读。）
+
+#### 外部算法作者 checklist（建议照这个来）
+
+- **必须实现**：`run(self, inp: SearchInput) -> SearchOutput`
+- **必须有**：`name: str`（会出现在 `results.json/summary.tsv` 里）
+- **不要直接访问**：数据集、RAG pipeline 内部对象（都通过 `inp.objective(cfg)` 间接评测）
+- **候选来源二选一**：
+  - **configs 模式**：用 `inp.configs` 作为候选池（random/UCB/TS 这类）
+  - **space 模式**：用 `inp.space` 作为离散搜索空间（greedy/TPE/GRPO 这类）
+- **合法性校验**：优先走 `evaluate(inp, cfg)`（会自动处理 `inp.validate` + `inp.on_trial`）
+- **预算约束**：把 `inp.budget` 当成“最多 objective 次数”，不要超评测次数
+- **可复现性**：用 `inp.seed` 初始化随机数
+
+#### 直接复用本仓库示例算法
+
+仓库自带一个最小示例算法：`scripts/template_algo.py`，可以这样跑：
+
+```bash
+python -m autorag_offline_search.cli \
+  --dataset_dir /path/to/dataset \
+  --out_dir /tmp/out \
+  --train_trials 3 \
+  --config /path/to/config.yaml \
+  --llm_base_url http://localhost:9000/v1 \
+  --algo scripts.template_algo:ExampleAlgo
+```

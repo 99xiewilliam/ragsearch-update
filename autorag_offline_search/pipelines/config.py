@@ -9,6 +9,8 @@ from ..modules.prompts import PRUNER_PROMPTS, REWRITER_PROMPTS
 MODEL_PRESETS: Dict[str, str] = {
     # Keep qwen3 as the only "known good" local path from the original repo.
     "qwen3": "/home/xwh/models/Qwen3-4B-Instruct-2507",
+    # Multimodal generator (example local path). Users can override freely via config/CLI.
+    "qwen3_vl_4b": "/home/xwh/models/Qwen3-VL-4B-Instruct",
 }
 
 

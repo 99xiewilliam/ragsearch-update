@@ -6,7 +6,18 @@ from typing import Dict, List
 
 from tqdm import tqdm
 
-from .metrics import MetricsConfig, aggregate_reward, compute_bertscore_f1_batch, compute_bleu, compute_chrf, compute_exact_match, compute_meteor, compute_qa_f1, compute_rouge
+from .metrics import (
+    MetricsConfig,
+    aggregate_reward,
+    compute_bertscore_f1_batch,
+    compute_bleu,
+    compute_chrf,
+    compute_exact_match,
+    compute_meteor,
+    compute_qa_f1,
+    compute_rouge,
+    compute_similarity_batch,
+)
 from .plugins.protocols import RagFactory
 from .types import Doc, EvalResult, QAExample
 
@@ -50,9 +61,14 @@ def evaluate_config(
     need_em = "em" in need
     need_f1 = "qa_f1" in need
     need_chrf = "chrf" in need
+    need_similarity = "similarity" in need
+    need_accuracy = "accuracy" in need
 
     preds: List[str] = []
     refs_for_bert: List[str] = []
+    preds_for_sim: List[str] = []
+    refs_for_sim: List[str] = []
+    accs: List[float] = []
 
     dump_f = None
     dumped = 0
@@ -95,14 +111,22 @@ def evaluate_config(
         if need_chrf:
             chrfs.append(compute_chrf(pred, refs))
 
-        if need_bertscore:
-            # For BERTScore, pick a single reference (best rougeL against pred) to keep it feasible.
+        if need_accuracy:
+            # For now, treat accuracy as strict exact match over references.
+            accs.append(compute_exact_match(pred, refs))
+
+        if need_bertscore or need_similarity:
+            # Pick a single reference (best rougeL against pred) to keep it feasible.
             if refs:
                 best_ref = max(refs, key=lambda rr: compute_rouge(pred, [rr])["rougeL"])
             else:
                 best_ref = ""
-            preds.append(pred)
-            refs_for_bert.append(best_ref)
+            if need_bertscore:
+                preds.append(pred)
+                refs_for_bert.append(best_ref)
+            if need_similarity:
+                preds_for_sim.append(pred)
+                refs_for_sim.append(best_ref)
 
         if dump_f is not None:
             import json
@@ -147,6 +171,15 @@ def evaluate_config(
     if need_bertscore:
         bert_f1s = compute_bertscore_f1_batch(preds, refs_for_bert, model=metrics_cfg.bertscore_model, batch_size=16)
 
+    sim_scores: List[float] = []
+    if need_similarity:
+        sim_scores = compute_similarity_batch(
+            preds_for_sim,
+            refs_for_sim,
+            model=metrics_cfg.similarity_model,
+            batch_size=32,
+        )
+
     per_metric = {
         "rouge1": float(sum(rouge1s) / max(1, len(rouge1s))),
         "rouge2": float(sum(rouge2s) / max(1, len(rouge2s))),
@@ -157,6 +190,8 @@ def evaluate_config(
         "em": float(sum(ems) / max(1, len(ems))) if ems else 0.0,
         "qa_f1": float(sum(f1s) / max(1, len(f1s))) if f1s else 0.0,
         "chrf": float(sum(chrfs) / max(1, len(chrfs))) if chrfs else 0.0,
+        "similarity": float(sum(sim_scores) / max(1, len(sim_scores))) if sim_scores else 0.0,
+        "accuracy": float(sum(accs) / max(1, len(accs))) if accs else 0.0,
     }
     reward = float(aggregate_reward(per_metric, metrics_cfg.weights))
     t1 = time.time()

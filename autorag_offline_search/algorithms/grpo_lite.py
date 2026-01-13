@@ -6,7 +6,7 @@ import random
 from dataclasses import dataclass
 from typing import Dict, List, Sequence, Tuple, Optional
 
-from .base import ObjectiveFn, Trial
+from .base import SearchInput, SearchOutput, Trial, best_trial
 
 
 def _log_softmax(xs: List[float]) -> List[float]:
@@ -138,9 +138,12 @@ class GRPO:
                 cfg["chunk_overlap"] = min(int(cfg["chunk_overlap"]), int(cfg["chunk_size"]) - 1)
         return cfg, idxs, logp_total
 
-    def search(self, *, objective: ObjectiveFn, budget: int) -> List[Trial]:
+    def run(self, inp: SearchInput) -> SearchOutput:
+        budget = int(inp.budget)
+        objective = inp.objective
+
         if budget <= 0:
-            return []
+            return SearchOutput(algo=self.name, trials=[], best=None)
 
         if self.group_size <= 0:
             raise ValueError("group_size must be > 0")
@@ -272,10 +275,5 @@ class GRPO:
             for k in self.space.keys():
                 self.logits[k] = params[k].detach().cpu().tolist()
 
-        return trials
-
-
-# Backward compatible alias (older name in the project code path)
-GRPOLite = GRPO
-
+        return SearchOutput(algo=self.name, trials=trials, best=best_trial(trials))
 

@@ -5,12 +5,21 @@ scikit-learn==1.5.2
 rouge-score==0.1.2
 nltk==3.9.1
 bert-score==0.3.13
-torch==2.5.1
-transformers==4.47.1
+# NOTE:
+# - 不要在这里 pin/安装 torch：torch 的 wheel 与 CUDA/驱动/显卡强绑定，容易导致用户“被降级/装错 CUDA 版本”。
+# - 对于 Blackwell(sm_120)：需要 CUDA 12.8+ 构建的 PyTorch；否则会看到 “sm_120 is not compatible ...”。
+#   参考：https://discuss.pytorch.org/t/nvidia-geforce-rtx-5070-ti-with-cuda-capability-sm-120/221509
+# - 请先按你的机器选择安装 torch（见 requirements-torch-cu128.txt），再 pip install -r requirements.txt
+# Qwen3-VL-Embedding/Reranker 依赖 transformers>=4.57.0（模型脚本直接 import transformers.models.qwen3_vl.*）
+transformers>=4.57.0
 optuna==4.1.0
 tqdm==4.67.1
 sacrebleu==2.4.3
 sentence-transformers==3.2.1
+pillow>=10.0.0
+huggingface_hub>=0.23.0
+qwen-vl-utils>=0.0.14
+scipy>=1.10.0
 openai==1.57.0
 rank-bm25==0.2.2
 google-generativeai==0.8.3

@@ -43,3 +43,29 @@ class OpenAICompatLLM:
         )
         return (resp.choices[0].message.content or "").strip()
 
+    def generate_with_images(self, *, prompt: str, image_paths: list[str], max_tokens: int) -> str:
+        """
+        Vision-capable call for OpenAI-compatible endpoints (e.g. vLLM with Qwen-VL).
+        Sends images as data URLs (base64).
+        """
+        import base64
+        import mimetypes
+
+        content = [{"type": "text", "text": prompt}]
+        for p in list(image_paths or [])[:4]:
+            p = str(p or "").strip()
+            if not p:
+                continue
+            with open(p, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+            mime = mimetypes.guess_type(p)[0] or "image/jpeg"
+            content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+
+        resp = self._c.chat.completions.create(
+            model=self.cfg.model,
+            messages=[{"role": "user", "content": content}],
+            temperature=float(self.cfg.temperature),
+            max_tokens=int(max_tokens),
+        )
+        return (resp.choices[0].message.content or "").strip()
+

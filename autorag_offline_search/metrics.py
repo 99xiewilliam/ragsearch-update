@@ -15,6 +15,7 @@ class MetricsConfig:
     # weights for the final reward
     weights: Dict[str, float]
     bertscore_model: str = "microsoft/deberta-xlarge-mnli"  # strong default, but heavy
+    similarity_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def _safe_mean(xs: List[float]) -> float:
@@ -176,6 +177,63 @@ def compute_bertscore_f1_batch(preds: List[str], refs: List[str], *, model: str,
     return [float(x.item()) for x in F1]
 
 
+def compute_similarity_batch(
+    preds: List[str],
+    refs: List[str],
+    *,
+    model: str,
+    batch_size: int = 32,
+) -> List[float]:
+    """
+    Semantic similarity in [0,1] using cosine(sim(emb(pred), emb(ref))).
+    Robust fallback: if embedding model is unavailable, returns zeros.
+    """
+    if not preds:
+        return []
+    if len(preds) != len(refs):
+        raise ValueError("compute_similarity_batch expects aligned preds/refs lists")
+
+    try:
+        from sentence_transformers import SentenceTransformer
+    except Exception:
+        return [0.0 for _ in preds]
+
+    # Prefer CUDA, fallback to CPU if the environment/torch build can't run on GPU.
+    device = "cpu"
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            device = "cuda"
+    except Exception:
+        device = "cpu"
+
+    def _encode(dev: str):
+        m = SentenceTransformer(model, device=dev)
+        # normalize_embeddings makes cosine == dot product
+        a = m.encode(preds, batch_size=batch_size, normalize_embeddings=True, show_progress_bar=False)
+        b = m.encode(refs, batch_size=batch_size, normalize_embeddings=True, show_progress_bar=False)
+        return a, b
+
+    try:
+        a, b = _encode(device)
+    except Exception:
+        # GPU incompat / OOM / torch build mismatch -> retry on CPU
+        a, b = _encode("cpu")
+
+    out: List[float] = []
+    for i in range(len(preds)):
+        ai = a[i]
+        bi = b[i]
+        try:
+            s = float((ai * bi).sum())
+        except Exception:
+            s = 0.0
+        # cosine in [-1,1] -> map to [0,1]
+        out.append(max(0.0, min(1.0, (s + 1.0) / 2.0)))
+    return out
+
+
 def aggregate_reward(per_metric: Dict[str, float], weights: Dict[str, float]) -> float:
     total_w = 0.0
     s = 0.0
@@ -197,7 +255,39 @@ def parse_weights(spec: str) -> Dict[str, float]:
         if not part:
             continue
         k, v = part.split(":", 1)
-        out[k.strip()] = float(v.strip())
+        raw_k = k.strip()
+        k_norm = raw_k.lower().strip().replace("-", "_")
+        k_norm = "_".join(k_norm.split())  # spaces -> underscore
+        aliases = {
+            # rouge
+            "rougel": "rougeL",
+            "rouge_l": "rougeL",
+            "rouge_1": "rouge1",
+            "rouge_2": "rouge2",
+            # bertscore
+            "bertf1": "bertscore_f1",
+            "bert_f1": "bertscore_f1",
+            "bertscore": "bertscore_f1",
+            # exact match
+            "exact_match": "em",
+            "exactmatch": "em",
+            "exact_match_score": "em",
+            "em": "em",
+            # accuracy
+            "accuracy": "accuracy",
+            "acc": "accuracy",
+            # qa f1
+            "f1": "qa_f1",
+            "qa_f1": "qa_f1",
+            "qaf1": "qa_f1",
+            # similarity
+            "similarity": "similarity",
+            "semilarity": "similarity",
+            "semantic_similarity": "similarity",
+            "sim": "similarity",
+        }
+        key = aliases.get(k_norm, raw_k)
+        out[key] = float(v.strip())
     return out
 
 

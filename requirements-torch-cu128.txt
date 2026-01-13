@@ -1,0 +1,17 @@
+# Install PyTorch with CUDA 12.8 (cu128) first (recommended for Blackwell sm_120).
+# Then install the project deps:
+#   pip install -r requirements.txt
+#
+# If you are using conda env, run these commands inside the SAME env.
+#
+# Quick sanity check after install:
+#   python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.get_arch_list())"
+#
+# Reference discussion:
+#   https://discuss.pytorch.org/t/nvidia-geforce-rtx-5070-ti-with-cuda-capability-sm-120/221509
+
+--index-url https://download.pytorch.org/whl/cu128
+torch
+torchvision
+torchaudio
+

@@ -4,9 +4,9 @@ import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 from typing import Dict, List, Optional, Sequence, Any
 
-from .algorithms.base import Trial
+from .algorithms.base import SearchInput, Trial, best_trial
 from .algorithms.greedy import GreedyCoordinate
-from .algorithms.grpo_lite import GRPOLite
+from .algorithms.grpo_lite import GRPO
 from .algorithms.mab_ts import ThompsonSamplingGaussian
 from .algorithms.mab_ucb import UCB1Bandit
 from .algorithms.random_search import RandomSearch
@@ -17,7 +17,7 @@ from .plugins.loader import load_object
 from .plugins.protocols import RagFactory
 from .search_space import SearchSpace, config_to_str
 
-def _worker_run_algo(
+def _worker_run_algorithm(
     gpu_id: Optional[int],
     algo_name: str,
     kwargs: Dict[str, Any]
@@ -28,10 +28,6 @@ def _worker_run_algo(
     
     result = run_one_algorithm(algo_name, **kwargs)
     return algo_name, result
-
-def _best_trial(trials: List[Trial]) -> Optional[Trial]:
-    return max(trials, key=lambda t: t.reward) if trials else None
-
 
 def run_one_algorithm(
     algo_name: str,
@@ -68,6 +64,16 @@ def run_one_algorithm(
     seen = 0
     best_so_far: Optional[Trial] = None
 
+    def validate_cfg(cfg: Dict) -> bool:
+        # Keep this lightweight: just quick guards to avoid obviously invalid combos.
+        if "chunk_overlap" in cfg and "chunk_size" in cfg:
+            try:
+                if int(cfg["chunk_overlap"]) >= int(cfg["chunk_size"]):
+                    return False
+            except Exception:
+                return False
+        return True
+
     def objective(cfg: Dict) -> Trial:
         nonlocal seen, best_so_far
         # Merge order (pinning):
@@ -101,21 +107,32 @@ def run_one_algorithm(
         return tr
 
     def _make_algo(name: str, *, seed_for_algo: int):
+        # Plugin algorithm: "module.sub:ClassOrObj"
+        # Convention: prefer implementing `run(SearchInput)->SearchOutput` with a no-arg constructor.
+        if ":" in name:
+            obj = load_object(name)
+            if isinstance(obj, type):
+                obj = obj()
+            if not callable(getattr(obj, "run", None)):
+                raise TypeError(
+                    f"Plugin algo {name!r} must implement run(SearchInput)->SearchOutput."
+                )
+            return obj
         if name == "random":
-            return RandomSearch(all_cfgs, seed=seed_for_algo)
+            return RandomSearch(seed=seed_for_algo)
         if name == "greedy":
-            return GreedyCoordinate(space_dict, seed=seed_for_algo)
+            return GreedyCoordinate(seed=seed_for_algo)
         if name == "tpe":
             # Lazy import: optuna is an optional dependency.
             # This allows running grpo-only (or other algos) in environments without optuna.
             from .algorithms.tpe_optuna import TPESearch
 
-            return TPESearch(space_dict, seed=seed_for_algo)
+            return TPESearch(seed=seed_for_algo)
         if name == "ucb1":
             # UCB1 不使用 seed
-            return UCB1Bandit(all_cfgs)
+            return UCB1Bandit()
         if name == "ts":
-            return ThompsonSamplingGaussian(all_cfgs, seed=seed_for_algo)
+            return ThompsonSamplingGaussian(seed=seed_for_algo)
         if name in ("grpo", "grpo_a2", "grpo_a3"):
             # If not specified, scale group size mildly with space complexity (bits).
             if grpo_group_size and grpo_group_size > 0:
@@ -167,7 +184,7 @@ def run_one_algorithm(
                 elite_buffer_size = 0
                 elite_beta = 0.0
 
-            return GRPOLite(
+            return GRPO(
                 space_dict,
                 seed=seed_for_algo,
                 lr=lr,
@@ -181,6 +198,21 @@ def run_one_algorithm(
                 elite_beta=elite_beta,
             )
         raise ValueError(f"Unknown algo: {name}")
+
+    def _run_trials(algo_obj: object, *, b: int, seed_for_algo: int) -> List[Trial]:
+        inp = SearchInput(
+            objective=objective,
+            budget=int(b),
+            seed=int(seed_for_algo),
+            space=space_dict,
+            configs=all_cfgs,
+            validate=validate_cfg,
+        )
+        run = getattr(algo_obj, "run", None)
+        if not callable(run):
+            raise TypeError(f"Algorithm {getattr(algo_obj, 'name', algo_obj)!r} must implement run().")
+        out = run(inp)
+        return list(getattr(out, "trials", []))
 
     # --- Composite / portfolio algorithms ---
     # 目标：只用 train 的 reward 选最终 config，然后在 validation 上评估一次，比较稳定性/平均表现。
@@ -201,7 +233,7 @@ def run_one_algorithm(
                 print(f"[{algo_name}] sub_algo={sa} budget={b}")
             # 用不同 seed 偏移，减少完全相关的随机性
             algo = _make_algo(sa, seed_for_algo=int(seed) + 1000 + i)
-            train_trial_list.extend(algo.search(objective=objective, budget=int(b)))
+            train_trial_list.extend(_run_trials(algo, b=int(b), seed_for_algo=int(seed) + 1000 + i))
 
     elif algo_name == "portfolio_grpo_greedy":
         sub_algos = ["grpo", "greedy"]
@@ -216,7 +248,7 @@ def run_one_algorithm(
             if verbose:
                 print(f"[{algo_name}] sub_algo={sa} budget={b}")
             algo = _make_algo(sa, seed_for_algo=int(seed) + 3000 + i)
-            train_trial_list.extend(algo.search(objective=objective, budget=int(b)))
+            train_trial_list.extend(_run_trials(algo, b=int(b), seed_for_algo=int(seed) + 3000 + i))
 
     elif algo_name == "two_stage_tpe_then_grpo":
         # 两阶段：TPE 探索 -> GRPO 精炼（不做 warm-start，仅顺序分配预算）
@@ -231,11 +263,13 @@ def run_one_algorithm(
         train_trial_list = []
         if verbose:
             print(f"[{algo_name}] stage=tpe budget={b_tpe}")
-        train_trial_list.extend(_make_algo("tpe", seed_for_algo=int(seed) + 2000).search(objective=objective, budget=b_tpe))
+        algo_tpe = _make_algo("tpe", seed_for_algo=int(seed) + 2000)
+        train_trial_list.extend(_run_trials(algo_tpe, b=int(b_tpe), seed_for_algo=int(seed) + 2000))
         if b_grpo > 0:
             if verbose:
                 print(f"[{algo_name}] stage=grpo budget={b_grpo}")
-            train_trial_list.extend(_make_algo("grpo", seed_for_algo=int(seed) + 2001).search(objective=objective, budget=b_grpo))
+            algo_grpo = _make_algo("grpo", seed_for_algo=int(seed) + 2001)
+            train_trial_list.extend(_run_trials(algo_grpo, b=int(b_grpo), seed_for_algo=int(seed) + 2001))
 
     elif algo_name == "two_stage_tpe_then_grpo_a2":
         # Two-stage: TPE explore -> GRPO-A++ exploit (higher chance to beat pure TPE under interactions)
@@ -248,17 +282,19 @@ def run_one_algorithm(
         train_trial_list = []
         if verbose:
             print(f"[{algo_name}] stage=tpe budget={b_tpe}")
-        train_trial_list.extend(_make_algo("tpe", seed_for_algo=int(seed) + 2100).search(objective=objective, budget=b_tpe))
+        algo_tpe = _make_algo("tpe", seed_for_algo=int(seed) + 2100)
+        train_trial_list.extend(_run_trials(algo_tpe, b=int(b_tpe), seed_for_algo=int(seed) + 2100))
         if b_grpo > 0:
             if verbose:
                 print(f"[{algo_name}] stage=grpo_a2 budget={b_grpo}")
-            train_trial_list.extend(_make_algo("grpo_a2", seed_for_algo=int(seed) + 2101).search(objective=objective, budget=b_grpo))
+            algo_grpo = _make_algo("grpo_a2", seed_for_algo=int(seed) + 2101)
+            train_trial_list.extend(_run_trials(algo_grpo, b=int(b_grpo), seed_for_algo=int(seed) + 2101))
 
     else:
         algo = _make_algo(algo_name, seed_for_algo=int(seed))
-        train_trial_list = algo.search(objective=objective, budget=train_trials)
+        train_trial_list = _run_trials(algo, b=int(train_trials), seed_for_algo=int(seed))
 
-    best = _best_trial(train_trial_list)
+    best = best_trial(train_trial_list)
     if best is None:
         raise RuntimeError("No trials produced")
 
@@ -415,7 +451,7 @@ def run_dataset(
             for i, a in enumerate(algos):
                 gid = gpu_list[i % num_workers]
                 dump_path = os.path.join(out_dir, f"val_predictions_{a}.jsonl") if dump_val_generations else None
-                futures.append(executor.submit(_worker_run_algo, gid, a, {
+                futures.append(executor.submit(_worker_run_algorithm, gid, a, {
                     "docs_train": docs_train,
                     "qas_train": qas_train,
                     "docs_val": docs_val,

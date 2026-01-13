@@ -32,15 +32,15 @@ def _parse_args() -> argparse.Namespace:
         "--algo",
         type=str,
         default="random,greedy,tpe,ucb1,ts,grpo",
-        help="Comma-separated algos: random,greedy,tpe,ucb1,ts,grpo,grpo_a2,grpo_a3,portfolio_grpo_ts_tpe,portfolio_grpo_greedy,two_stage_tpe_then_grpo,two_stage_tpe_then_grpo_a2",
+        help="Comma-separated algos: random,greedy,tpe,ucb1,ts,grpo,grpo_a2,grpo_a3,portfolio_grpo_ts_tpe,portfolio_grpo_greedy,two_stage_tpe_then_grpo,two_stage_tpe_then_grpo_a2; also supports plugin spec 'module.sub:ClassOrObj' implementing run(SearchInput)->SearchOutput.",
     )
     p.add_argument("--train_trials", type=int, default=10)
     p.add_argument("--gpus", type=str, default="", help="Comma-separated GPU IDs to use for parallel algorithm execution (e.g. 0,1)")
     p.add_argument(
         "--metrics_weights",
         type=str,
-        default="rougeL:0.34,bertscore_f1:0.33,meteor:0.33",
-        help='Weight spec, e.g. "rougeL:0.34,bertscore_f1:0.33,meteor:0.33"',
+        default="bertscore_f1:1,rougeL:1,em:1,meteor:1,similarity:1,accuracy:1",
+        help='Weight spec, e.g. "bertscore_f1:1,rougeL:1,em:1,meteor:1,similarity:1,accuracy:1" (aliases supported: bertf1/rougel/exact_match/semilarity/acc).',
     )
     p.add_argument("--bertscore_model", type=str, default="microsoft/deberta-xlarge-mnli")
     p.add_argument(

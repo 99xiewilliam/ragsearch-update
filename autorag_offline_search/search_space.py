@@ -33,7 +33,14 @@ class SearchSpace:
 
     # embedding
     embedding_enabled: Sequence[bool] = (True, False)
+    # Base (text) embedders
     embedder_model: Sequence[str] = ("BAAI/bge-m3", "intfloat/e5-large-v2")
+    # Multimodal embedders (opt-in via pipeline == "multimodal")
+    multimodal_embedder_model: Sequence[str] = (
+        "Qwen/Qwen3-VL-Embedding-2B",
+        "Qwen/Qwen3-VL-Embedding-8B",
+        "openai/clip-vit-base-patch32",
+    )
 
     # retrieval
     retriever: Sequence[str] = ("cosine", "bm25", "hybrid")
@@ -42,7 +49,13 @@ class SearchSpace:
 
     # rerank
     reranker_enabled: Sequence[bool] = (True, False)
+    # Base (text) rerankers
     reranker_model: Sequence[str] = ("none", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    # Multimodal rerankers (opt-in via pipeline == "multimodal")
+    multimodal_reranker_model: Sequence[str] = (
+        "Qwen/Qwen3-VL-Reranker-2B",
+        "Qwen/Qwen3-VL-Reranker-8B",
+    )
     rerank_topk: Sequence[int] = (10, 15)
 
     # graph
@@ -107,11 +120,19 @@ class SearchSpace:
                     minws = self.min_chunk_words if ch_on else (8,)
 
                     for emb_on in self.embedding_enabled:
-                        emb_models = self.embedder_model if emb_on else ("BAAI/bge-m3",)
+                        if pipeline == "multimodal":
+                            cand = tuple(self.embedder_model) + tuple(self.multimodal_embedder_model)
+                        else:
+                            cand = tuple(self.embedder_model)
+                        emb_models = cand if emb_on else ("BAAI/bge-m3",)
                         retrievers = self.retriever if emb_on else ("bm25",)
 
                         for rr_on in self.reranker_enabled:
-                            rr_models = self.reranker_model if rr_on else ("none",)
+                            if pipeline == "multimodal":
+                                cand_rr = tuple(self.reranker_model) + tuple(self.multimodal_reranker_model)
+                            else:
+                                cand_rr = tuple(self.reranker_model)
+                            rr_models = cand_rr if rr_on else ("none",)
                             rrks = self.rerank_topk if rr_on else (10,)
 
                             for ch_method in ch_methods:

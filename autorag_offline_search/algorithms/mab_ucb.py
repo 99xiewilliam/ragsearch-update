@@ -4,39 +4,41 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List
 
-from .base import ObjectiveFn, Trial
+from .base import SearchInput, SearchOutput, Trial, best_trial, evaluate
 
 
 @dataclass
 class UCB1Bandit:
-    """
-    Treat each full config as an arm. Select arms using UCB1.
-    """
+    """把每个完整 config 视为一个 arm，用 UCB1 选择评测。"""
 
     name: str = "ucb1"
 
-    def __init__(self, configs: List[Dict]):
-        self.configs = list(configs)
+    def run(self, inp: SearchInput) -> SearchOutput:
+        if int(inp.budget) <= 0:
+            return SearchOutput(algo=self.name, trials=[], best=None)
+        if not inp.configs:
+            raise ValueError("UCB1Bandit requires inp.configs")
 
-    def search(self, *, objective: ObjectiveFn, budget: int) -> List[Trial]:
-        if budget <= 0 or not self.configs:
-            return []
+        configs = list(inp.configs)
+        n_arms = len(configs)
+        if n_arms == 0:
+            return SearchOutput(algo=self.name, trials=[], best=None)
 
-        n_arms = len(self.configs)
         counts = [0] * n_arms
         sums = [0.0] * n_arms
         trials: List[Trial] = []
 
         # initial pull each arm once if budget allows
-        for i in range(min(n_arms, budget)):
-            tr = objective(self.configs[i])
+        for i in range(min(n_arms, int(inp.budget))):
+            tr = evaluate(inp, configs[i])
+            if tr is None:
+                continue
             trials.append(tr)
             counts[i] += 1
             sums[i] += tr.reward
 
         t = len(trials)
-        while t < budget:
-            # select arm with max UCB
+        while t < int(inp.budget):
             ucb_vals = []
             for i in range(n_arms):
                 if counts[i] == 0:
@@ -45,13 +47,16 @@ class UCB1Bandit:
                     mean = sums[i] / counts[i]
                     bonus = math.sqrt(2.0 * math.log(max(2, t)) / counts[i])
                     ucb_vals.append(mean + bonus)
+
             arm = max(range(n_arms), key=lambda i: ucb_vals[i])
-            tr = objective(self.configs[arm])
+            tr = evaluate(inp, configs[arm])
+            if tr is None:
+                # invalid under validate(); try next iteration
+                t += 1
+                continue
             trials.append(tr)
             counts[arm] += 1
             sums[arm] += tr.reward
             t += 1
 
-        return trials
-
-
+        return SearchOutput(algo=self.name, trials=trials, best=best_trial(trials))
