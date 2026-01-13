@@ -140,6 +140,7 @@ python -m autorag_offline_search.cli \
   --train_trials 10 \
   --config /path/to/config.yaml \
   --llm_base_url http://localhost:9000/v1 \
+  --module_logs \
   --out_dir /home/xwh/autorag_offline_search_runs/bioasq
 ```
 

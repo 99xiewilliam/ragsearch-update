@@ -105,6 +105,11 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
+        "--module_logs",
+        action="store_true",
+        help="If set, print per-module logs inside the pipeline (rewriter/chunking/retrieval/rerank/prune/generate).",
+    )
+    p.add_argument(
         "--verbose",
         action="store_true",
         help="Print per-trial logs (algo, trial idx, reward, best-so-far).",
@@ -145,6 +150,8 @@ def main() -> None:
     base_cfg: Dict[str, Any] = {}
     if args.config:
         base_cfg = _load_yaml(args.config)
+    if args.module_logs:
+        base_cfg = {**base_cfg, "module_logs": True}
 
     if args.dataset_dir:
         run_dataset(

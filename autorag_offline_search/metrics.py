@@ -6,6 +6,8 @@ from typing import Dict, List
 from rouge_score import rouge_scorer
 import nltk
 from nltk.translate.meteor_score import meteor_score
+import os
+import zipfile
 
 
 @dataclass(frozen=True)
@@ -112,14 +114,23 @@ def compute_meteor(pred: str, refs: List[str]) -> float:
     if not refs or not pred:
         return 0.0
 
-    # Ensure required NLTK data is available
+    # Ensure required NLTK data is available.
+    # NOTE: in some environments downloads can be interrupted and leave corrupted files
+    # (e.g. a non-zip file where NLTK expects a zip). We treat both LookupError and
+    # BadZipFile as "not available" and try to (re)download into a project-local cache.
+    nltk_dir = os.environ.get("NLTK_DATA") or os.path.join(os.path.expanduser("~"), ".cache", "autorag_nltk")
+    os.makedirs(nltk_dir, exist_ok=True)
+    if nltk_dir not in nltk.data.path:
+        nltk.data.path.insert(0, nltk_dir)
+
     for res in ["wordnet", "punkt", "omw-1.4"]:
         try:
             nltk.data.find(f"corpora/{res}" if res != "punkt" else "tokenizers/punkt")
-        except LookupError:
+        except (LookupError, zipfile.BadZipFile, OSError):
             try:
-                nltk.download(res, quiet=True)
+                nltk.download(res, download_dir=nltk_dir, quiet=True)
             except Exception:
+                # Keep evaluation robust even if NLTK cannot download (offline env).
                 pass
 
     # NLTK meteor_score expects references as a list of lists of tokens,

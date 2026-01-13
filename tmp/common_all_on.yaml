@@ -1,0 +1,37 @@
+llm_base_url: http://localhost:9000/v1
+pipeline: common
+
+# rewriter
+rewriter_enabled: true
+rewriter_model: qwen3
+rewriter_prompt_id: rewrite_v1
+rewriter_max_tokens: 128
+
+# chunking
+chunking_enabled: true
+chunking_method: token
+chunk_size: 128
+chunk_overlap: 32
+min_chunk_words: 4
+
+# embedding + retriever
+embedding_enabled: true
+embedder_model: BAAI/bge-m3
+retriever: hybrid
+retriever_topk: 10
+hybrid_alpha: 0.5
+
+# reranker（打开）
+reranker_enabled: true
+reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
+rerank_topk: 10
+
+# pruner（打开）
+pruner_enabled: true
+pruner_model: qwen3
+pruner_prompt_id: prune_v1
+pruner_max_tokens: 128
+
+# generator（固定 prompt，但模型与长度可配）
+generator_model: /home/xwh/models/Qwen3-4B-Instruct-2507
+generator_max_tokens: 64

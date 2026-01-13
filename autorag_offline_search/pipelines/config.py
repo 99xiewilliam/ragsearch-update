@@ -57,6 +57,8 @@ class NormalizedConfig:
     graph_expand_enabled: bool
     # multimodal
     multimodal_metadata_enabled: bool
+    # logging
+    module_logs: bool
 
 
 def normalize_config(cfg: Dict) -> NormalizedConfig:
@@ -115,6 +117,7 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
 
     graph_expand_enabled = bool(c.get("graph_expand_enabled", True))
     multimodal_metadata_enabled = bool(c.get("multimodal_metadata_enabled", True))
+    module_logs = bool(c.get("module_logs", False))
 
     # basic guards
     if chunk_overlap < 0 or chunk_overlap >= chunk_size:
@@ -150,5 +153,6 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
         generator_max_tokens=generator_max_tokens,
         graph_expand_enabled=graph_expand_enabled,
         multimodal_metadata_enabled=multimodal_metadata_enabled,
+        module_logs=module_logs,
     )
 

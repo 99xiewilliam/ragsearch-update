@@ -6,6 +6,7 @@ from typing import Dict, List, Sequence
 from ..types import Doc
 from .common import CommonRagPipeline
 from .config import normalize_config
+from ..modules.logging_utils import log, log_kv
 
 
 def _keywords(text: str) -> List[str]:
@@ -67,6 +68,8 @@ class GraphRagPipeline(CommonRagPipeline):
 
         out: Dict = {"query": query, "pipeline": "graph"}
         try:
+            log(self.cfg, "[GRAPH] ===== answer_with_trace() =====")
+            log_kv(self.cfg, prefix="[GRAPH] ", key="query", value=query, limit=200)
             q0 = str(query or "")
             q = rewrite_query(
                 query=q0,
@@ -80,6 +83,7 @@ class GraphRagPipeline(CommonRagPipeline):
                 model_resolver=resolve_model,
             )
             out["rewritten_query"] = q
+            log_kv(self.cfg, prefix="[GRAPH:rewriter] ", key="rewritten_query", value=q, limit=200)
 
             q_emb = None
             if self._vector_index is not None:
@@ -95,6 +99,7 @@ class GraphRagPipeline(CommonRagPipeline):
                 bm25=self._bm25,
             )
             out["retrieved_indices"] = base_idx
+            log(self.cfg, f"[GRAPH:retriever] retrieved_indices={base_idx[:10]} (n={len(base_idx)})")
             if not base_idx:
                 out["answer"] = ""
                 return out
@@ -117,11 +122,13 @@ class GraphRagPipeline(CommonRagPipeline):
             else:
                 expanded = [int(i) for i in base_idx]
             out["expanded_indices"] = expanded
+            log(self.cfg, f"[GRAPH:expand] enabled={self.cfg.graph_expand_enabled} expanded_n={len(expanded)}")
 
             docs = [self._chunk_texts[i] for i in expanded]
             # rerank within expanded pool (returns indices into `docs`)
             ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
             out["reranked_indices"] = ridx
+            log(self.cfg, f"[GRAPH:reranker] reranked_indices={ridx[:10]} (n={len(ridx)})")
             final = [docs[i] for i in ridx]
 
             final = prune_chunks(
@@ -137,6 +144,7 @@ class GraphRagPipeline(CommonRagPipeline):
                 model_resolver=resolve_model,
             )
             out["final_chunks"] = final[: min(10, len(final))]
+            log(self.cfg, f"[GRAPH:pruner] final_chunks={len(final)}")
 
             ctx = "\n\n---\n\n".join(final)
             ans = generate_answer(
@@ -146,6 +154,7 @@ class GraphRagPipeline(CommonRagPipeline):
                 llm_base_url=self.cfg.llm_base_url,
             )
             out["answer"] = ans
+            log_kv(self.cfg, prefix="[GRAPH:generator] ", key="answer", value=ans, limit=240)
             return out
         except Exception as e:
             out["error"] = repr(e)
