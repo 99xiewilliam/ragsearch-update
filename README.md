@@ -62,7 +62,9 @@
   - `pruner_prompt_id`: `prune_v1`
   - `pruner_max_tokens`
 - **generator（固定 prompt，不作为超参）**
-  - `generator_model`：默认 `qwen3`（可通过 YAML/CLI 覆盖；multimodal 也一样）
+  - `generator_model`：默认会按 pipeline 区分（可通过 YAML/CLI 覆盖）
+    - `common/graph`：默认 `qwen3`
+    - `multimodal`：默认 `qwen3_vl_4b`（本地路径 `/home/xwh/models/Qwen3-VL-4B-Instruct`）
   - `generator_max_tokens`：可通过 CLI 覆盖
 
 补充（pipeline 专属开关，不引入额外超参逻辑）：
@@ -194,6 +196,29 @@ pruner_enabled: false
 generator_model: qwen3
 generator_max_tokens: 128
 ```
+
+补充：YAML 也支持把某些字段写成 **list**，表示“候选集合/约束搜索空间”（用于让算法在候选里挑最优）。
+推荐写法是显式区分：
+
+```yaml
+base:
+  pipeline: multimodal
+  llm_base_url: http://localhost:9000/v1
+  chunking_enabled: false
+  generator_model: /home/xwh/models/Qwen3-VL-4B-Instruct
+
+space:
+  # 只在这些候选里搜索
+  embedder_model:
+    - /home/xwh/models/Qwen3-VL-Embedding-2B
+    - /home/xwh/models/Qwen3-VL-Embedding-8B
+  reranker_model:
+    - /home/xwh/models/Qwen3-VL-Reranker-2B
+    - /home/xwh/models/Qwen3-VL-Reranker-8B
+  retriever_topk: [3, 5, 10]
+```
+
+（兼容简写：如果你直接把 `embedder_model: [.., ..]` 写在顶层，也会被当作 space 约束；顶层的标量仍然是固定配置。）
 
 然后运行：
 

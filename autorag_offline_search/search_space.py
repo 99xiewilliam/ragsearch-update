@@ -20,6 +20,8 @@ class SearchSpace:
     rewriter_enabled: Sequence[bool] = (False, True)
     # Default to the vLLM-served model only; users can add more models explicitly later.
     rewriter_model: Sequence[str] = ("qwen3",)
+    # Multimodal rewriter (opt-in via pipeline == "multimodal")
+    multimodal_rewriter_model: Sequence[str] = ("qwen3_vl_4b",)
     rewriter_prompt_id: Sequence[str] = ("rewrite_v1", "rewrite_v2_keywords")
     rewriter_max_tokens: Sequence[int] = (64, 128)
 
@@ -67,6 +69,8 @@ class SearchSpace:
     # pruner
     pruner_enabled: Sequence[bool] = (False, True)
     pruner_model: Sequence[str] = ("qwen3",)
+    # Multimodal pruner (opt-in via pipeline == "multimodal")
+    multimodal_pruner_model: Sequence[str] = ("qwen3_vl_4b",)
     pruner_prompt_id: Sequence[str] = ("prune_v1",)
     pruner_max_tokens: Sequence[int] = (64, 128)
 
@@ -109,7 +113,11 @@ class SearchSpace:
             mm_meta_list = self.multimodal_metadata_enabled if pipeline == "multimodal" else (True,)
 
             for re_on in self.rewriter_enabled:
-                re_models = self.rewriter_model if re_on else ("qwen3",)
+                if pipeline == "multimodal":
+                    cand_re = tuple(self.multimodal_rewriter_model)
+                else:
+                    cand_re = tuple(self.rewriter_model)
+                re_models = cand_re if re_on else ("qwen3",)
                 re_prompts = self.rewriter_prompt_id if re_on else ("rewrite_v1",)
                 re_maxtoks = self.rewriter_max_tokens if re_on else (128,)
 
@@ -120,16 +128,19 @@ class SearchSpace:
                     minws = self.min_chunk_words if ch_on else (8,)
 
                     for emb_on in self.embedding_enabled:
+                        # For multimodal pipeline, default to multimodal embedders to avoid silent degradation
+                        # when docs are image-heavy. Users can still force a text embedder via YAML/CLI override.
                         if pipeline == "multimodal":
-                            cand = tuple(self.embedder_model) + tuple(self.multimodal_embedder_model)
+                            cand = tuple(self.multimodal_embedder_model)
                         else:
                             cand = tuple(self.embedder_model)
                         emb_models = cand if emb_on else ("BAAI/bge-m3",)
                         retrievers = self.retriever if emb_on else ("bm25",)
 
                         for rr_on in self.reranker_enabled:
+                            # Same for rerankers: multimodal pipeline defaults to VL rerankers.
                             if pipeline == "multimodal":
-                                cand_rr = tuple(self.reranker_model) + tuple(self.multimodal_reranker_model)
+                                cand_rr = tuple(self.multimodal_reranker_model)
                             else:
                                 cand_rr = tuple(self.reranker_model)
                             rr_models = cand_rr if rr_on else ("none",)
@@ -151,7 +162,11 @@ class SearchSpace:
                                                                     for ge in graph_expand_list:
                                                                         for mm in mm_meta_list:
                                                                             for pr_on in self.pruner_enabled:
-                                                                                pr_models = self.pruner_model if pr_on else ("qwen3",)
+                                                                                if pipeline == "multimodal":
+                                                                                    cand_pr = tuple(self.multimodal_pruner_model)
+                                                                                else:
+                                                                                    cand_pr = tuple(self.pruner_model)
+                                                                                pr_models = cand_pr if pr_on else ("qwen3",)
                                                                                 pr_prompts = self.pruner_prompt_id if pr_on else ("prune_v1",)
                                                                                 pr_maxtoks = self.pruner_max_tokens if pr_on else (128,)
 

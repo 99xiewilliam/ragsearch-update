@@ -1,6 +1,7 @@
 import json
 import os
 import multiprocessing
+import dataclasses
 from concurrent.futures import ProcessPoolExecutor
 from typing import Dict, List, Optional, Sequence, Any
 
@@ -393,6 +394,71 @@ def run_dataset(
     else:
         space = SearchSpace()
 
+    # YAML config can provide:
+    # - fixed base config (scalars): merged into each trial config
+    # - space constraints (lists): restrict the search space candidates
+    fixed_base: Dict[str, Any] = dict(config_base or {})
+    space_overrides: Dict[str, Sequence] = {}
+
+    # Optional structured form:
+    #   base: { ... }
+    #   space: { key: [candidates...] }
+    if isinstance(fixed_base.get("base"), dict):
+        base = dict(fixed_base.pop("base") or {})
+        fixed_base = {**fixed_base, **base}
+    if isinstance(fixed_base.get("space"), dict):
+        space_overrides.update(dict(fixed_base.pop("space") or {}))
+
+    # Backward-compatible shorthand: list values at top-level are treated as space constraints.
+    for k in list(fixed_base.keys()):
+        v = fixed_base.get(k)
+        if isinstance(v, (list, tuple)):
+            space_overrides[k] = list(v)
+            fixed_base.pop(k, None)
+
+    if space_overrides:
+        pipeline_hint = str(fixed_base.get("pipeline") or "")
+        # If user pins pipeline in base, also restrict the enumerated search space pipeline.
+        # Otherwise, configs generated for other pipelines may leak in, and then get "re-labeled"
+        # as multimodal via merge, causing model mismatches (e.g., qwen3 text model in multimodal).
+        if pipeline_hint in {"common", "graph", "multimodal"} and hasattr(space, "pipeline"):
+            space = dataclasses.replace(space, pipeline=(pipeline_hint,))
+        for k, v in list(space_overrides.items()):
+            vv = tuple(v) if isinstance(v, (list, tuple)) else (v,)
+            # pipeline-aware mapping for multimodal vs common
+            if k == "embedder_model":
+                if pipeline_hint == "multimodal" and hasattr(space, "multimodal_embedder_model"):
+                    space = dataclasses.replace(space, multimodal_embedder_model=vv)
+                elif hasattr(space, "embedder_model"):
+                    space = dataclasses.replace(space, embedder_model=vv)
+                continue
+            if k == "reranker_model":
+                if pipeline_hint == "multimodal" and hasattr(space, "multimodal_reranker_model"):
+                    space = dataclasses.replace(space, multimodal_reranker_model=vv)
+                elif hasattr(space, "reranker_model"):
+                    space = dataclasses.replace(space, reranker_model=vv)
+                continue
+            if k == "rewriter_model":
+                if pipeline_hint == "multimodal" and hasattr(space, "multimodal_rewriter_model"):
+                    space = dataclasses.replace(space, multimodal_rewriter_model=vv)
+                elif hasattr(space, "rewriter_model"):
+                    space = dataclasses.replace(space, rewriter_model=vv)
+                continue
+            if k == "pruner_model":
+                if pipeline_hint == "multimodal" and hasattr(space, "multimodal_pruner_model"):
+                    space = dataclasses.replace(space, multimodal_pruner_model=vv)
+                elif hasattr(space, "pruner_model"):
+                    space = dataclasses.replace(space, pruner_model=vv)
+                continue
+            if hasattr(space, k):
+                space = dataclasses.replace(space, **{k: vv})
+                continue
+    else:
+        # No explicit space overrides, but still honor pinned pipeline in base (if any).
+        pipeline_hint = str(fixed_base.get("pipeline") or "")
+        if pipeline_hint in {"common", "graph", "multimodal"} and hasattr(space, "pipeline"):
+            space = dataclasses.replace(space, pipeline=(pipeline_hint,))
+
     results: Dict[str, Dict] = {}
     inject = {
         "dataset_id": os.path.basename(dataset_dir.rstrip("/")),
@@ -433,7 +499,7 @@ def run_dataset(
             "train_trials": train_trials,
             "seed": seed,
             "grpo_group_size": grpo_group_size,
-            "config_base": config_base,
+            "config_base": fixed_base,
             "config_inject": inject,
             "verbose": verbose,
             "log_every": log_every,
@@ -462,7 +528,7 @@ def run_dataset(
                     "train_trials": train_trials,
                     "seed": seed,
                     "grpo_group_size": grpo_group_size,
-                    "config_base": config_base,
+                    "config_base": fixed_base,
                     "config_inject": inject,
                     "verbose": verbose,
                     "log_every": log_every,
@@ -492,7 +558,7 @@ def run_dataset(
                 train_trials=train_trials,
                 seed=seed,
                 grpo_group_size=grpo_group_size,
-                config_base=config_base,
+                config_base=fixed_base,
                 config_inject=inject,
                 verbose=verbose,
                 log_every=log_every,

@@ -1,0 +1,40 @@
+base:
+  pipeline: common
+  llm_base_url: http://localhost:9000/v1
+  module_logs: true
+
+  # 固定 generator（prompt 固定，model 你也可以固定）
+  generator_model: /home/xwh/models/Qwen3-4B-Instruct-2507
+  generator_max_tokens: 64
+
+space:
+  # rewriter（开着，但让它在候选里挑）
+  rewriter_enabled: [true]
+  rewriter_model: [qwen3]
+  rewriter_prompt_id: [rewrite_v1, rewrite_v2_keywords]
+  rewriter_max_tokens: [64, 128]
+
+  # chunking
+  chunking_enabled: [true]
+  chunking_method: [token, semantic]
+  chunk_size: [128, 256]
+  chunk_overlap: [32, 64]
+  min_chunk_words: [4, 8]
+
+  # embedding + retriever
+  embedding_enabled: [true]
+  embedder_model: [BAAI/bge-m3, intfloat/e5-large-v2]
+  retriever: [hybrid, cosine, bm25]
+  retriever_topk: [10, 20]
+  hybrid_alpha: [0.3, 0.5, 0.7]
+
+  # reranker
+  reranker_enabled: [true]
+  reranker_model: [cross-encoder/ms-marco-MiniLM-L-6-v2]
+  rerank_topk: [10, 15]
+
+  # pruner
+  pruner_enabled: [true]
+  pruner_model: [qwen3]
+  pruner_prompt_id: [prune_v1]
+  pruner_max_tokens: [64, 128]

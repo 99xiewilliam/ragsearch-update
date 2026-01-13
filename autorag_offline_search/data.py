@@ -4,6 +4,7 @@ from dataclasses import asdict
 from typing import List, Tuple
 
 import pandas as pd
+import json
 
 from .types import Doc, QAExample
 
@@ -13,8 +14,29 @@ def _to_list_str(x) -> List[str]:
         return [""]
     if isinstance(x, list):
         return [str(v) for v in x if str(v).strip()] or [""]
-    s = str(x)
-    return [s] if s.strip() else [""]
+    # Some parquet writers store lists as strings, e.g. "['82']" or '["82"]'
+    if isinstance(x, str):
+        s = x.strip()
+        if s.startswith("[") and s.endswith("]"):
+            # Try JSON first
+            try:
+                obj = json.loads(s)
+                if isinstance(obj, list):
+                    return [str(v) for v in obj if str(v).strip()] or [""]
+            except Exception:
+                pass
+            # Fallback to Python literal list
+            try:
+                import ast
+
+                obj = ast.literal_eval(s)
+                if isinstance(obj, list):
+                    return [str(v) for v in obj if str(v).strip()] or [""]
+            except Exception:
+                pass
+        return [s] if s else [""]
+    s = str(x).strip()
+    return [s] if s else [""]
 
 
 def load_split(dataset_dir: str, split: str) -> Tuple[List[Doc], List[QAExample]]:
@@ -34,7 +56,18 @@ def load_split(dataset_dir: str, split: str) -> Tuple[List[Doc], List[QAExample]
         doc_id = str(r.get("doc_id", "")).strip()
         contents = str(r.get("contents", "") or "")
         meta = r.get("metadata", None)
-        docs.append(Doc(doc_id=doc_id, contents=contents, metadata=meta if isinstance(meta, dict) else None))
+        if isinstance(meta, dict):
+            md = meta
+        elif isinstance(meta, str) and meta.strip():
+            try:
+                md = json.loads(meta)
+                if not isinstance(md, dict):
+                    md = None
+            except Exception:
+                md = None
+        else:
+            md = None
+        docs.append(Doc(doc_id=doc_id, contents=contents, metadata=md))
 
     qas: List[QAExample] = []
     for _, r in qa_df.iterrows():

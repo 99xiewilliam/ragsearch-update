@@ -167,6 +167,22 @@ class MultiModalRagPipeline(CommonRagPipeline):
             log(self.cfg, f"[MM:chunking] wrote chunks: {chunks_path}")
 
         log(self.cfg, f"[MM:chunking] chunks={len(self._chunk_texts)} images_chunks={sum(1 for x in self._chunk_images if x)}")
+        images_chunks = sum(1 for x in self._chunk_images if x)
+        if images_chunks > 0:
+            em = str(self.cfg.embedder_model or "")
+            rr = str(self.cfg.reranker_model or "")
+            rw = str(self.cfg.rewriter_model or "")
+            pr = str(self.cfg.pruner_model or "")
+            # Heuristic warning: image-heavy corpus but text-only models selected.
+            looks_text_embedder = (not is_probably_clip_model(em)) and ("qwen3-vl-embedding" not in em.lower())
+            looks_text_reranker = (("qwen3-vl-reranker" not in rr.lower()) and ("/qwen3-vl-reranker" not in rr.lower()))
+            looks_text_llm = ("vl" not in rw.lower()) and ("vl" not in pr.lower()) and ("/qwen3-vl" not in (rw.lower() + pr.lower()))
+            if looks_text_embedder:
+                log(self.cfg, "[MM:warn] Detected image chunks, but embedder_model looks text-only. Retrieval may degrade for image-heavy docs.")
+            if self.cfg.reranker_enabled and looks_text_reranker:
+                log(self.cfg, "[MM:warn] Detected image chunks, but reranker_model looks text-only. Consider Qwen3-VL-Reranker-* for multimodal rerank.")
+            if (self.cfg.rewriter_enabled or self.cfg.pruner_enabled) and looks_text_llm:
+                log(self.cfg, "[MM:warn] Detected image chunks, but rewriter/pruner models look text-only. Consider using a VL-capable model (e.g. Qwen3-VL-4B-Instruct) for multimodal rewriting/pruning.")
 
         # embeddings (only needed for cosine/hybrid)
         if self.cfg.embedding_enabled and self.cfg.retriever in {"cosine", "hybrid"}:

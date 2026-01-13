@@ -114,7 +114,14 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
         pruner_prompt = str(c.get("pruner_prompt", PRUNER_PROMPTS["prune_v1"]))
     pruner_max_tokens = int(c.get("pruner_max_tokens", 128))
 
-    generator_model = str(c.get("generator_model", "qwen3"))
+    # Generator prompt is fixed, but generator *model* can be overridden by YAML/CLI.
+    # We make the default model pipeline-aware:
+    # - common/graph: text LLM (qwen3)
+    # - multimodal  : VL LLM (qwen3_vl_4b)
+    if "generator_model" in c and str(c.get("generator_model") or "").strip():
+        generator_model = str(c.get("generator_model"))
+    else:
+        generator_model = "qwen3_vl_4b" if pipeline == "multimodal" else "qwen3"
     generator_max_tokens = int(c.get("generator_max_tokens", 128))
 
     graph_expand_enabled = bool(c.get("graph_expand_enabled", True))
