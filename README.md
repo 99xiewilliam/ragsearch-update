@@ -69,7 +69,21 @@
 
 补充（pipeline 专属开关，不引入额外超参逻辑）：
 - **graph**
-  - `graph_expand_enabled`: 是否启用 1-hop 图扩展
+  - `graph_expand_enabled`: 是否启用图扩展（默认 true）
+  - `graph_mode`: `"global" | "local" | "hybrid"`（默认 `hybrid`）
+    - `global`: 只用常规检索结果（不扩展）
+    - `local`: 只从 top seeds 扩展邻居，在 expanded pool 内 rerank/prune
+    - `hybrid`: local 扩展 + global 召回做 union 后再 rerank/prune（更接近 LightRAG 的 local/global/hybrid 思路，参考 [`HKUDS/LightRAG`](https://github.com/HKUDS/LightRAG)）
+  - `graph_edge_source`: `"provided" | "structure" | "knn" | "keyword"`（默认 `keyword`）
+    - `provided`: 用数据集自带图（GraphRAG-Bench 场景），通过 `graph_edges_path` 提供边文件
+    - `structure`: 同一 doc 内相邻 chunk 连边（适配 HotpotQA/MultiHopRAG 常见语料结构）
+    - `knn`: 用 chunk embedding 的近邻连边（更稳但需要 embedding）
+    - `keyword`: 共享关键词连边（便宜但噪声大）
+  - `graph_edges_path`: 当 `graph_edge_source=provided` 时生效，JSONL 边文件路径
+  - `graph_hops`: 多跳扩展 hop 数（默认 1；HotpotQA/MultiHopRAG 可尝试 2，但要配合预算）
+  - `graph_seed_topk`: local/hybrid 模式下用于扩展的 seed 数（默认 `min(3, retriever_topk)`）
+  - `graph_neighbor_topk`: 每个 seed 最多扩展多少个邻居（默认 50）
+  - `graph_max_expanded`: expanded pool 的总预算（默认 `max(200, retriever_topk*10)`）
 - **multimodal**
   - `multimodal_metadata_enabled`: 是否把 `Doc.metadata` 中的 caption/OCR 等文本拼入检索语料
 

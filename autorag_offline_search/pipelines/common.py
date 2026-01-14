@@ -82,6 +82,8 @@ class CommonRagPipeline:
 
         self._corpus_fp = _corpus_fingerprint(self.docs)
         self._chunk_texts: List[str] = []
+        self._chunk_doc_ids: List[str] = []
+        self._chunk_pos: List[int] = []
         self._vector_index: Optional[VectorIndex] = None
         self._chunk_emb_raw: Optional[np.ndarray] = None
         self._bm25: Optional[BM25Index] = None
@@ -97,12 +99,24 @@ class CommonRagPipeline:
         # chunks
         if os.path.exists(chunks_path):
             log(self.cfg, f"[COMMON:chunking] load cached chunks: {chunks_path}")
-            chunks = []
+            chunks: List[str] = []
+            doc_ids: List[str] = []
+            poss: List[int] = []
             with open(chunks_path, "r", encoding="utf-8") as f:
                 for line in f:
                     o = json.loads(line)
-                    chunks.append(str(o.get("text", "") or ""))
-            self._chunk_texts = [t for t in chunks if t.strip()]
+                    t = str(o.get("text", "") or "").strip()
+                    if not t:
+                        continue
+                    chunks.append(t)
+                    doc_ids.append(str(o.get("doc_id", "") or ""))
+                    try:
+                        poss.append(int(o.get("pos", 0)))
+                    except Exception:
+                        poss.append(0)
+            self._chunk_texts = chunks
+            self._chunk_doc_ids = doc_ids
+            self._chunk_pos = poss
         else:
             log(
                 self.cfg,
@@ -117,15 +131,44 @@ class CommonRagPipeline:
                     min_chunk_words=self.cfg.min_chunk_words,
                     token_model=self.cfg.embedder_model,
                 )
-                self._chunk_texts = [t for t in chunk_docs(self.docs, cfg=ch_cfg) if t.strip()]
+                from ..modules.chunking import chunk_docs_with_meta
+
+                chunks_meta = chunk_docs_with_meta(self.docs, cfg=ch_cfg)
+                self._chunk_texts = [str(c.get("text", "") or "").strip() for c in chunks_meta if str(c.get("text", "") or "").strip()]
+                self._chunk_doc_ids = [str(c.get("doc_id", "") or "") for c in chunks_meta if str(c.get("text", "") or "").strip()]
+                self._chunk_pos = [int(c.get("pos", 0) or 0) for c in chunks_meta if str(c.get("text", "") or "").strip()]
             else:
                 # Skip chunking: treat each doc as one "chunk"
-                self._chunk_texts = [str(d.contents or "").strip() for d in self.docs if str(d.contents or "").strip()]
+                self._chunk_texts = []
+                self._chunk_doc_ids = []
+                self._chunk_pos = []
+                for d in self.docs:
+                    t = str(d.contents or "").strip()
+                    if not t:
+                        continue
+                    self._chunk_texts.append(t)
+                    self._chunk_doc_ids.append(str(d.doc_id or ""))
+                    self._chunk_pos.append(0)
             with open(chunks_path, "w", encoding="utf-8") as f:
                 for i, t in enumerate(self._chunk_texts):
-                    f.write(json.dumps({"i": i, "text": t}, ensure_ascii=False) + "\n")
+                    f.write(
+                        json.dumps(
+                            {"i": i, "doc_id": self._chunk_doc_ids[i] if i < len(self._chunk_doc_ids) else "", "pos": self._chunk_pos[i] if i < len(self._chunk_pos) else 0, "text": t},
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
             log(self.cfg, f"[COMMON:chunking] wrote chunks: {chunks_path}")
         log(self.cfg, f"[COMMON:chunking] chunks={len(self._chunk_texts)}")
+        if len(self._chunk_texts) == 0:
+            # Avoid downstream crashes (e.g. embedding/index building on empty arrays).
+            # This can happen for languages without whitespace when min_chunk_words > 0,
+            # or when docs are empty.
+            log(self.cfg, "[COMMON:warn] no chunks produced; skip embedding/bm25 and return empty answers")
+            self._chunk_emb_raw = None
+            self._vector_index = None
+            self._bm25 = None
+            return
 
         # embeddings (only needed for cosine/hybrid)
         if self.cfg.embedding_enabled and self.cfg.retriever in {"cosine", "hybrid"}:

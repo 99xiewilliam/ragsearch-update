@@ -62,6 +62,12 @@ class SearchSpace:
 
     # graph
     graph_expand_enabled: Sequence[bool] = (True, False)
+    graph_mode: Sequence[str] = ("hybrid", "global", "local")
+    graph_edge_source: Sequence[str] = ("keyword", "knn", "structure", "provided")
+    graph_hops: Sequence[int] = (1, 2)
+    graph_seed_topk: Sequence[int] = (3, 5)
+    graph_neighbor_topk: Sequence[int] = (20, 50)
+    graph_max_expanded: Sequence[int] = (200, 500)
 
     # multimodal
     multimodal_metadata_enabled: Sequence[bool] = (True, False)
@@ -95,6 +101,12 @@ class SearchSpace:
             "reranker_model": self.reranker_model,
             "rerank_topk": self.rerank_topk,
             "graph_expand_enabled": self.graph_expand_enabled,
+            "graph_mode": self.graph_mode,
+            "graph_edge_source": self.graph_edge_source,
+            "graph_hops": self.graph_hops,
+            "graph_seed_topk": self.graph_seed_topk,
+            "graph_neighbor_topk": self.graph_neighbor_topk,
+            "graph_max_expanded": self.graph_max_expanded,
             "multimodal_metadata_enabled": self.multimodal_metadata_enabled,
             "pruner_enabled": self.pruner_enabled,
             "pruner_model": self.pruner_model,
@@ -110,6 +122,12 @@ class SearchSpace:
         for pipeline in self.pipeline:
             # pipeline-specific toggles
             graph_expand_list = self.graph_expand_enabled if pipeline == "graph" else (True,)
+            graph_mode_list = self.graph_mode if pipeline == "graph" else ("hybrid",)
+            graph_src_list = self.graph_edge_source if pipeline == "graph" else ("keyword",)
+            graph_hops_list = self.graph_hops if pipeline == "graph" else (1,)
+            graph_seed_list = self.graph_seed_topk if pipeline == "graph" else (3,)
+            graph_nb_list = self.graph_neighbor_topk if pipeline == "graph" else (50,)
+            graph_maxexp_list = self.graph_max_expanded if pipeline == "graph" else (200,)
             mm_meta_list = self.multimodal_metadata_enabled if pipeline == "multimodal" else (True,)
 
             for re_on in self.rewriter_enabled:
@@ -159,21 +177,29 @@ class SearchSpace:
                                                         for alpha in alphas:
                                                             for rr in rr_models:
                                                                 for rrk in rrks:
-                                                                    for ge in graph_expand_list:
-                                                                        for mm in mm_meta_list:
-                                                                            for pr_on in self.pruner_enabled:
-                                                                                if pipeline == "multimodal":
-                                                                                    cand_pr = tuple(self.multimodal_pruner_model)
-                                                                                else:
-                                                                                    cand_pr = tuple(self.pruner_model)
-                                                                                pr_models = cand_pr if pr_on else ("qwen3",)
-                                                                                pr_prompts = self.pruner_prompt_id if pr_on else ("prune_v1",)
-                                                                                pr_maxtoks = self.pruner_max_tokens if pr_on else (128,)
+                                                                    for ge, gm, gsrc, ghops, gseed, gnb, gmx, mm in itertools.product(
+                                                                        graph_expand_list,
+                                                                        graph_mode_list,
+                                                                        graph_src_list,
+                                                                        graph_hops_list,
+                                                                        graph_seed_list,
+                                                                        graph_nb_list,
+                                                                        graph_maxexp_list,
+                                                                        mm_meta_list,
+                                                                    ):
+                                                                        for pr_on in self.pruner_enabled:
+                                                                            if pipeline == "multimodal":
+                                                                                cand_pr = tuple(self.multimodal_pruner_model)
+                                                                            else:
+                                                                                cand_pr = tuple(self.pruner_model)
+                                                                            pr_models = cand_pr if pr_on else ("qwen3",)
+                                                                            pr_prompts = self.pruner_prompt_id if pr_on else ("prune_v1",)
+                                                                            pr_maxtoks = self.pruner_max_tokens if pr_on else (128,)
 
-                                                                                for rm, rp, rmt in itertools.product(re_models, re_prompts, re_maxtoks):
-                                                                                    for pm, pp, pmt in itertools.product(pr_models, pr_prompts, pr_maxtoks):
-                                                                                        out.append(
-                                                                                            {
+                                                                            for rm, rp, rmt in itertools.product(re_models, re_prompts, re_maxtoks):
+                                                                                for pm, pp, pmt in itertools.product(pr_models, pr_prompts, pr_maxtoks):
+                                                                                    out.append(
+                                                                                        {
                                                                                                 "pipeline": pipeline,
                                                                                                 "rewriter_enabled": bool(re_on),
                                                                                                 "rewriter_model": rm,
@@ -193,13 +219,19 @@ class SearchSpace:
                                                                                                 "reranker_model": rr,
                                                                                                 "rerank_topk": int(rrk),
                                                                                                 "graph_expand_enabled": bool(ge),
+                                                                                                "graph_mode": str(gm),
+                                                                                                "graph_edge_source": str(gsrc),
+                                                                                                "graph_hops": int(ghops),
+                                                                                                "graph_seed_topk": int(gseed),
+                                                                                                "graph_neighbor_topk": int(gnb),
+                                                                                                "graph_max_expanded": int(gmx),
                                                                                                 "multimodal_metadata_enabled": bool(mm),
                                                                                                 "pruner_enabled": bool(pr_on),
                                                                                                 "pruner_model": pm,
                                                                                                 "pruner_prompt_id": pp,
                                                                                                 "pruner_max_tokens": int(pmt),
-                                                                                            }
-                                                                                        )
+                                                                                        }
+                                                                                    )
         return out
 
 

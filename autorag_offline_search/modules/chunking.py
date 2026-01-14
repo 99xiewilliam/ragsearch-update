@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Iterable, List, Sequence
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 from transformers import AutoTokenizer
 
@@ -57,6 +57,31 @@ def chunk_docs(
             token_model=str(cfg.token_model),
         )
     raise ValueError(f"Unknown chunking method: {method}")
+
+
+def chunk_docs_with_meta(
+    docs: Iterable[Doc],
+    *,
+    cfg: ChunkingConfig,
+) -> List[Dict]:
+    """
+    Like chunk_docs(), but returns chunk objects with provenance:
+      {"doc_id": str, "pos": int, "text": str}
+
+    This is useful for GraphRAG structure edges (adjacent chunks within the same doc).
+    """
+    out: List[Dict] = []
+    for d in docs:
+        did = str(getattr(d, "doc_id", "") or "")
+        parts = chunk_docs([d], cfg=cfg)
+        pos = 0
+        for t in parts:
+            tt = str(t or "").strip()
+            if not tt:
+                continue
+            out.append({"doc_id": did, "pos": int(pos), "text": tt})
+            pos += 1
+    return out
 
 
 def _chunk_semantic(docs: Iterable[Doc], *, chunk_size: int, min_chunk_words: int) -> List[str]:

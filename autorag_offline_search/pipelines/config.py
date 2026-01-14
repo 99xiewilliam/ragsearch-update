@@ -57,6 +57,13 @@ class NormalizedConfig:
     generator_max_tokens: int
     # graph
     graph_expand_enabled: bool
+    graph_mode: str  # "global" | "local" | "hybrid"
+    graph_edge_source: str  # "provided" | "structure" | "knn" | "keyword"
+    graph_edges_path: str
+    graph_hops: int
+    graph_seed_topk: int
+    graph_neighbor_topk: int
+    graph_max_expanded: int
     # multimodal
     multimodal_metadata_enabled: bool
     # logging
@@ -125,6 +132,19 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
     generator_max_tokens = int(c.get("generator_max_tokens", 128))
 
     graph_expand_enabled = bool(c.get("graph_expand_enabled", True))
+    graph_mode = str(c.get("graph_mode", "hybrid"))
+    if graph_mode not in {"global", "local", "hybrid"}:
+        raise ValueError(f"Unknown graph_mode: {graph_mode}")
+    graph_edge_source = str(c.get("graph_edge_source", c.get("graph_builder", "keyword")))
+    if graph_edge_source not in {"provided", "structure", "knn", "keyword"}:
+        raise ValueError(f"Unknown graph_edge_source: {graph_edge_source}")
+    graph_edges_path = str(c.get("graph_edges_path", "") or "")
+    graph_hops = int(c.get("graph_hops", 1))
+    if graph_hops <= 0:
+        raise ValueError("graph_hops must be >= 1")
+    graph_seed_topk = int(c.get("graph_seed_topk", min(3, retriever_topk)))
+    graph_neighbor_topk = int(c.get("graph_neighbor_topk", 50))
+    graph_max_expanded = int(c.get("graph_max_expanded", max(200, int(retriever_topk) * 10)))
     multimodal_metadata_enabled = bool(c.get("multimodal_metadata_enabled", True))
     module_logs = bool(c.get("module_logs", False))
 
@@ -161,6 +181,13 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
         generator_model=generator_model,
         generator_max_tokens=generator_max_tokens,
         graph_expand_enabled=graph_expand_enabled,
+        graph_mode=graph_mode,
+        graph_edge_source=graph_edge_source,
+        graph_edges_path=graph_edges_path,
+        graph_hops=graph_hops,
+        graph_seed_topk=graph_seed_topk,
+        graph_neighbor_topk=graph_neighbor_topk,
+        graph_max_expanded=graph_max_expanded,
         multimodal_metadata_enabled=multimodal_metadata_enabled,
         module_logs=module_logs,
     )

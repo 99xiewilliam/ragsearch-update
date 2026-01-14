@@ -73,6 +73,24 @@ def best_trial(trials: List[Trial]) -> Optional[Trial]:
     return max(trials, key=lambda t: t.reward) if trials else None
 
 
+def evaluate(inp: SearchInput, cfg: Dict) -> Optional[Trial]:
+    """
+    Lightweight helper used by built-in algorithms.
+
+    Returns None if inp.validate rejects cfg; otherwise runs inp.objective(cfg).
+    """
+    if inp.validate is not None:
+        try:
+            if not bool(inp.validate(cfg)):
+                return None
+        except Exception:
+            return None
+    tr = inp.objective(cfg)
+    if inp.on_trial is not None:
+        inp.on_trial(tr)
+    return tr
+
+
 def run_algo(algo: object, inp: SearchInput) -> SearchOutput:
     """
     Adapter to support:

@@ -299,6 +299,27 @@ def run_one_algorithm(
     if best is None:
         raise RuntimeError("No trials produced")
 
+    # Optional: compute "global retrieval" best on the same train trials, so users can
+    # quickly see whether graph expansion brings gains.
+    def _is_global_baseline(cfg: Dict) -> bool:
+        try:
+            if str(cfg.get("pipeline", "") or "") != "graph":
+                return False
+            if bool(cfg.get("graph_expand_enabled", True)) is False:
+                return True
+            if str(cfg.get("graph_mode", "") or "") == "global":
+                return True
+        except Exception:
+            return False
+        return False
+
+    best_global: Optional[Trial] = None
+    for t in train_trial_list:
+        if not _is_global_baseline(t.config):
+            continue
+        if best_global is None or t.reward > best_global.reward:
+            best_global = t
+
     # validate once with best config
     val_res, val_stats = evaluate_config(
         docs_val,
@@ -317,6 +338,33 @@ def run_one_algorithm(
         else None,
         dump_limit=int(dump_val_limit) if dump_val_limit else 0,
     )
+
+    # For graph pipeline, also evaluate a deterministic "global baseline" config:
+    # same config as best, but disable expansion (global retrieval only).
+    val_global = None
+    try:
+        if str(best.config.get("pipeline", "") or "") == "graph":
+            baseline_cfg = dict(best.config)
+            baseline_cfg["graph_expand_enabled"] = False
+            baseline_cfg["graph_mode"] = "global"
+            val_g_res, val_g_stats = evaluate_config(
+                docs_val,
+                qas_val,
+                baseline_cfg,
+                metrics_cfg=metrics_cfg,
+                rag_factory=rag_factory,
+                show_progress=show_eval_progress,
+            )
+            val_global = {
+                "reward": val_g_res.weighted_reward,
+                "seconds": val_g_stats.seconds,
+                "metrics": val_g_res.per_metric,
+                "config": baseline_cfg,
+                "config_str": config_to_str(baseline_cfg),
+                "delta_vs_best": float(val_res.weighted_reward - val_g_res.weighted_reward),
+            }
+    except Exception:
+        val_global = None
 
     return {
         "algo": algo_name,
@@ -337,6 +385,18 @@ def run_one_algorithm(
             "config": best.config,
             "config_str": config_to_str(best.config),
         },
+        "best_train_global": (
+            {
+                "reward": best_global.reward,
+                "seconds": best_global.seconds,
+                "metrics": best_global.metrics,
+                "config": best_global.config,
+                "config_str": config_to_str(best_global.config),
+                "delta_vs_best": float(best.reward - best_global.reward),
+            }
+            if best_global is not None
+            else None
+        ),
         "validation": {
             "reward": val_res.weighted_reward,
             "seconds": val_stats.seconds,
@@ -344,6 +404,7 @@ def run_one_algorithm(
             "config": best.config,
             "config_str": config_to_str(best.config),
         },
+        "validation_global": val_global,
     }
 
 
@@ -583,15 +644,38 @@ def run_dataset(
 
     # write a small CSV-ish summary (tab-separated) for quick comparison
     m_keys = sorted(metrics_cfg.weights.keys())
-    header = ["algo", "train_best_reward", "val_reward"] + [f"val_{k}" for k in m_keys] + ["best_config"]
+    header = [
+        "algo",
+        "train_best_reward",
+        "train_best_global_reward",
+        "train_delta_vs_global",
+        "val_reward",
+        "val_global_reward",
+        "val_delta_vs_global",
+    ] + [f"val_{k}" for k in m_keys] + ["best_config"]
     lines = ["\t".join(header)]
     
     for a in algos:
         r = results[a]
         bt = r["best_train"]["reward"]
+        bg = r.get("best_train_global") or None
+        bg_reward = float(bg["reward"]) if isinstance(bg, dict) else 0.0
+        # NOTE: we report +delta when best beats global baseline.
+        best_minus_global = float(bt - bg_reward) if bg is not None else 0.0
         v = r["validation"]
+        vg = r.get("validation_global") or None
+        vg_reward = float(vg["reward"]) if isinstance(vg, dict) else 0.0
+        val_minus_global = float(v["reward"] - vg_reward) if vg is not None else 0.0
         
-        row = [a, f"{bt:.6f}", f"{v['reward']:.6f}"]
+        row = [
+            a,
+            f"{bt:.6f}",
+            f"{bg_reward:.6f}",
+            f"{best_minus_global:.6f}",
+            f"{v['reward']:.6f}",
+            f"{vg_reward:.6f}",
+            f"{val_minus_global:.6f}",
+        ]
         for k in m_keys:
             row.append(f"{v['metrics'].get(k, 0.0):.6f}")
         row.append(r["best_train"]["config_str"])

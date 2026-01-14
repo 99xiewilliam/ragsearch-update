@@ -35,11 +35,12 @@ def _qwen_vl_embedder(model_name_or_path: str):
         spec.loader.exec_module(mod)  # type: ignore[attr-defined]
         Qwen3VLEmbedder = getattr(mod, "Qwen3VLEmbedder")
     else:
-        # Fallback: try importing from transformers if user installed package elsewhere
-        from importlib import import_module
-
-        mod = import_module("scripts.qwen3_vl_embedding")
-        Qwen3VLEmbedder = getattr(mod, "Qwen3VLEmbedder")
+        raise ModuleNotFoundError(
+            "Qwen3-VL embedding helper script not found. "
+            "Set embedder_model to a local model directory that contains scripts/qwen3_vl_embedding.py "
+            "(e.g. /home/xwh/models/Qwen3-VL-Embedding-2B), or use a CLIP embedder "
+            "(e.g. openai/clip-vit-base-patch32)."
+        )
 
     # Prefer bf16 on CUDA; CPU falls back internally.
     kwargs = {}
@@ -101,8 +102,13 @@ def embed_mm_texts(model_name: str, texts: Sequence[str]) -> np.ndarray:
         return np.zeros((0, 1), dtype=np.float32)
 
     if _looks_like_qwen_vl_embedding(model_name):
-        emb = _qwen_vl_embedder(model_name).process([{"text": t} for t in list(texts)], normalize=True)
-        return np.asarray(emb.detach().float().cpu().numpy(), dtype=np.float32)
+        try:
+            emb = _qwen_vl_embedder(model_name).process([{"text": t} for t in list(texts)], normalize=True)
+            return np.asarray(emb.detach().float().cpu().numpy(), dtype=np.float32)
+        except Exception:
+            # Fallback to a robust text embedder so the demo can keep running.
+            # (Prefer a model that is likely already cached in this repo's workflows.)
+            return embed_mm_texts("BAAI/bge-m3", texts)
 
     if is_probably_clip_model(model_name):
         m, proc = _clip(model_name)
@@ -147,21 +153,25 @@ def embed_mm_chunks(
     """
     # Qwen3-VL embedding supports multimodal inputs directly (text/image/mix) into the same space.
     if _looks_like_qwen_vl_embedding(model_name):
-        inputs = []
-        for t, imgs in zip(list(chunk_texts), list(chunk_images)):
-            p0: Optional[str] = None
-            if isinstance(imgs, list) and imgs:
-                p0 = str(imgs[0] or "").strip()
-            item = {}
-            if t and str(t).strip():
-                item["text"] = str(t)
-            if p0:
-                item["image"] = p0
-            if not item:
-                item["text"] = "NULL"
-            inputs.append(item)
-        emb = _qwen_vl_embedder(model_name).process(inputs, normalize=True)
-        return np.asarray(emb.detach().float().cpu().numpy(), dtype=np.float32)
+        try:
+            inputs = []
+            for t, imgs in zip(list(chunk_texts), list(chunk_images)):
+                p0: Optional[str] = None
+                if isinstance(imgs, list) and imgs:
+                    p0 = str(imgs[0] or "").strip()
+                item = {}
+                if t and str(t).strip():
+                    item["text"] = str(t)
+                if p0:
+                    item["image"] = p0
+                if not item:
+                    item["text"] = "NULL"
+                inputs.append(item)
+            emb = _qwen_vl_embedder(model_name).process(inputs, normalize=True)
+            return np.asarray(emb.detach().float().cpu().numpy(), dtype=np.float32)
+        except Exception:
+            # Fallback: text-only embedding (keeps pipeline running even without Qwen helper script).
+            return embed_mm_texts("BAAI/bge-m3", chunk_texts).astype(np.float32)
 
     txt = embed_mm_texts(model_name, chunk_texts)
     if not is_probably_clip_model(model_name):

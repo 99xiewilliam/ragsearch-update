@@ -1,0 +1,21 @@
+# Dataset adapters
+
+This repo uses a simple on-disk dataset format:
+
+- `<dataset_dir>/train/corpus.parquet`
+- `<dataset_dir>/train/qa.parquet`
+- `<dataset_dir>/validation/corpus.parquet`
+- `<dataset_dir>/validation/qa.parquet`
+
+Optional (GraphRAG):
+
+- `<dataset_dir>/graph/edges.jsonl`
+  - each line: `{"src":"<doc_id>","dst":"<doc_id>"}` (recommended)
+  - or: `{"src_i": 12, "dst_i": 34}` (chunk indices; only safe if chunking is disabled and doc order is fixed)
+
+Adapters (planned):
+
+- HotpotQA (fullwiki): build corpus from wiki paragraphs; no provided edges; recommend `graph_edge_source=structure|knn`.
+- MultiHop-RAG: build corpus from provided passages/snippets; do NOT use evidence labels to build edges.
+- GraphRAG-Bench: use provided graph (write `graph/edges.jsonl`).
+
