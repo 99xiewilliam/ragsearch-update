@@ -24,21 +24,30 @@
 - `doc_id`
 - `contents`
 
-### Pipeline（重构后的三大类）
+### Pipeline（两大类）
 
-项目现在按三类 pipeline 组织（由配置 `pipeline` 选择）：
+项目现在按两类 pipeline 组织（由配置 `pipeline` 选择）：
 
 - **common**：常用 RAG（rewriter → chunking → embedding → retriever → reranker → pruner → generator）
-- **graph**：GraphRAG（目前为骨架：结构已就位，后续可在此基础上加入图构建/扩展检索）
-- **multimodal**：多模态 RAG（目前为骨架：结构已就位，后续可从 `Doc.metadata` 引入图像/音频等）
+- **multimodal**：多模态 RAG（支持从 `Doc.metadata` 引入图像等信息，走多模态 embedding/rerank/generator）
 
 ### 可选组件与超参（只保留你指定的那些）
+
+说明：**本项目支持的配置项仍然比较全**（见 `autorag_offline_search/pipelines/config.py::normalize_config`），但默认的 **SearchSpace（超参搜索空间）已经按“更像你要的实验流程”做了精简**：
+- rewriter：只搜索 `rewriter_enabled / rewriter_model / rewriter_prompt_id`
+- chunking：只搜索 `chunking_enabled / chunk_size`
+- embedding：只搜索 `embedder_model`（默认保持 `embedding_enabled=true`）
+- retriever：搜索 `bm25_weight / retriever_topk`（`bm25_weight=0` 表示 cosine，`=1` 表示 bm25，中间值表示 hybrid 且等价于 `hybrid_alpha`）
+- reranker：只搜索 `reranker_enabled / reranker_model`
+- rerank_topk：搜索 `rerank_topk`（枚举时约束 `rerank_topk <= retriever_topk`）
+- pruner：只搜索 `pruner_enabled / pruner_model`（prompt 定死 `prune_v1`；max_tokens 默认 `32678` 哨兵）
+- generator：固定（不作为搜索维度；可在 YAML/CLI 覆盖模型与 max_tokens）
 
 - **rewriter**
   - `rewriter_enabled`: 是否启用
   - `rewriter_model`: `qwen3|llama3`（也支持直接传模型名/路径）
   - `rewriter_prompt_id`: `rewrite_v1|rewrite_v2_keywords`
-  - `rewriter_max_tokens`
+  - `rewriter_max_tokens`（高级选项：只影响**输出**长度；默认 `32678` 表示“不显式传 max_tokens，交给 vLLM 决定”，避免把上下文长度误当输出上限）
 - **chunking**
   - `chunking_enabled`: 是否启用（关闭则退化为“每个 doc 当成一个 chunk”）
   - `chunking_method`: `semantic|token`
@@ -51,7 +60,7 @@
 - **retriever**
   - `retriever`: `cosine|bm25|hybrid`
   - `retriever_topk`
-  - `hybrid_alpha`（仅 `hybrid` 生效）
+  - `bm25_weight`（统一检索旋钮：0=cosine，1=bm25，(0,1)=hybrid；内部会映射为 `retriever/hybrid_alpha`）
 - **reranker**
   - `reranker_enabled`: 是否启用（关闭则不 rerank）
   - `reranker_model`: `none` 或 cross-encoder 模型名
@@ -59,31 +68,15 @@
 - **pruner**
   - `pruner_enabled`
   - `pruner_model`: `qwen3|llama3`
-  - `pruner_prompt_id`: `prune_v1`
-  - `pruner_max_tokens`
+  - `pruner_prompt_id/pruner_prompt`：已固定为 `prune_v1`（不再作为可变参数）
+  - `pruner_max_tokens`：同 rewriter，默认 `32678` 表示“不显式传 max_tokens”
 - **generator（固定 prompt，不作为超参）**
   - `generator_model`：默认会按 pipeline 区分（可通过 YAML/CLI 覆盖）
-    - `common/graph`：默认 `qwen3`
+    - `common`：默认 `qwen3`
     - `multimodal`：默认 `qwen3_vl_4b`（本地路径 `/home/xwh/models/Qwen3-VL-4B-Instruct`）
   - `generator_max_tokens`：可通过 CLI 覆盖
 
 补充（pipeline 专属开关，不引入额外超参逻辑）：
-- **graph**
-  - `graph_expand_enabled`: 是否启用图扩展（默认 true）
-  - `graph_mode`: `"global" | "local" | "hybrid"`（默认 `hybrid`）
-    - `global`: 只用常规检索结果（不扩展）
-    - `local`: 只从 top seeds 扩展邻居，在 expanded pool 内 rerank/prune
-    - `hybrid`: local 扩展 + global 召回做 union 后再 rerank/prune（更接近 LightRAG 的 local/global/hybrid 思路，参考 [`HKUDS/LightRAG`](https://github.com/HKUDS/LightRAG)）
-  - `graph_edge_source`: `"provided" | "structure" | "knn" | "keyword"`（默认 `keyword`）
-    - `provided`: 用数据集自带图（GraphRAG-Bench 场景），通过 `graph_edges_path` 提供边文件
-    - `structure`: 同一 doc 内相邻 chunk 连边（适配 HotpotQA/MultiHopRAG 常见语料结构）
-    - `knn`: 用 chunk embedding 的近邻连边（更稳但需要 embedding）
-    - `keyword`: 共享关键词连边（便宜但噪声大）
-  - `graph_edges_path`: 当 `graph_edge_source=provided` 时生效，JSONL 边文件路径
-  - `graph_hops`: 多跳扩展 hop 数（默认 1；HotpotQA/MultiHopRAG 可尝试 2，但要配合预算）
-  - `graph_seed_topk`: local/hybrid 模式下用于扩展的 seed 数（默认 `min(3, retriever_topk)`）
-  - `graph_neighbor_topk`: 每个 seed 最多扩展多少个邻居（默认 50）
-  - `graph_max_expanded`: expanded pool 的总预算（默认 `max(200, retriever_topk*10)`）
 - **multimodal**
   - `multimodal_metadata_enabled`: 是否把 `Doc.metadata` 中的 caption/OCR 等文本拼入检索语料
 
@@ -230,6 +223,11 @@ space:
     - /home/xwh/models/Qwen3-VL-Reranker-2B
     - /home/xwh/models/Qwen3-VL-Reranker-8B
   retriever_topk: [3, 5, 10]
+  # bm25_weight 既可以写成离散候选，也可以写成“范围”（会自动展开成网格）
+  bm25_weight:
+    low: 0
+    high: 1
+    steps: 11
 ```
 
 （兼容简写：如果你直接把 `embedder_model: [.., ..]` 写在顶层，也会被当作 space 约束；顶层的标量仍然是固定配置。）

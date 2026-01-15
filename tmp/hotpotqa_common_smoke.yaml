@@ -1,0 +1,22 @@
+# HotPotQA common pipeline smoke config (fast + no extra model downloads)
+#
+# Key idea:
+# - Use pure BM25 (bm25_weight=1) to avoid embedding model downloads.
+# - Disable reranker/pruner/rewriter for a minimal "pipeline runs end-to-end" check.
+# - Use qa_f1 metric via CLI: --metrics_weights "qa_f1:1,em:1"
+pipeline: common
+
+# Retrieval: 1.0 => pure BM25, and embedding will be auto-disabled in normalize_config().
+bm25_weight: 1.0
+retriever_topk: 10
+
+# Keep it simple for smoke tests
+chunking_enabled: false
+reranker_enabled: false
+pruner_enabled: false
+rewriter_enabled: false
+
+# Generator: must match the model name/path exposed by your vLLM OpenAI-compatible server.
+generator_model: "/home/xwh/models/Qwen3-4B-Instruct-2507"
+generator_max_tokens: 32768
+

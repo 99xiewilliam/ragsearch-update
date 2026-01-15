@@ -6,7 +6,7 @@ import random
 from dataclasses import dataclass
 from typing import Dict, List, Sequence, Tuple, Optional
 
-from .base import SearchInput, SearchOutput, Trial, best_trial
+from .base import SearchInput, SearchOutput, Trial, best_trial, evaluate
 
 
 def _log_softmax(xs: List[float]) -> List[float]:
@@ -140,7 +140,6 @@ class GRPO:
 
     def run(self, inp: SearchInput) -> SearchOutput:
         budget = int(inp.budget)
-        objective = inp.objective
 
         if budget <= 0:
             return SearchOutput(algo=self.name, trials=[], best=None)
@@ -177,8 +176,21 @@ class GRPO:
 
             # 1) sample a group/batch
             for _ in range(g):
-                cfg, idxs, logp = self._sample_with_indices()
-                tr = objective(cfg)
+                # IMPORTANT: respect inp.validate (via evaluate()), otherwise GRPO can propose invalid cfgs
+                # and silently waste budget / crash inside objective.
+                max_attempts = 50
+                tr: Optional[Trial] = None
+                cfg: Dict = {}
+                idxs: Dict[str, int] = {}
+                logp: float = 0.0
+                for _attempt in range(max_attempts):
+                    cfg, idxs, logp = self._sample_with_indices()
+                    tr = evaluate(inp, cfg)
+                    if tr is not None:
+                        break
+                if tr is None:
+                    # Could not find a valid config quickly; stop early to avoid infinite loop.
+                    break
                 batch_cfgs.append(cfg)
                 batch_idxs.append(idxs)
                 batch_logp_old.append(logp)
@@ -186,7 +198,9 @@ class GRPO:
                 batch_trials.append(tr)
 
             trials.extend(batch_trials)
-            used += g
+            used += len(batch_trials)
+            if not batch_trials:
+                break
 
             # 2) group-relative advantages (normalize within group)
             r = torch.tensor(batch_rewards, dtype=torch.float32, device=device)
@@ -194,7 +208,7 @@ class GRPO:
                 # Map rewards to normalized ranks in [-1, 1] (robust under noisy/outlier rewards).
                 # rank 0 = worst, rank g-1 = best.
                 ranks = torch.argsort(torch.argsort(r))
-                denom = max(1.0, float(g - 1))
+                denom = max(1.0, float(len(batch_rewards) - 1))
                 adv = (ranks.to(torch.float32) / denom) * 2.0 - 1.0
             else:
                 mean = torch.mean(r)

@@ -59,9 +59,31 @@ class ChromaCosineIndex:
         documents: List[str],  # len N
         metadatas: Optional[List[Dict]] = None,
     ):
+        import os
+        import logging
+
+        # ---- Chroma telemetry guard ----
+        # In some dependency combinations, Chroma's PostHog telemetry integration can break
+        # (e.g. "capture() takes 1 positional argument but 3 were given"), spamming stderr.
+        # This is not critical for indexing/querying, so we hard-disable and silence it.
+        #
+        # Note: We set env vars *before* importing chromadb to maximize effectiveness.
+        os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")   # used by some chroma versions
+        os.environ.setdefault("CHROMA_TELEMETRY", "False")       # used by some chroma versions
+        os.environ.setdefault("CHROMA_DISABLE_TELEMETRY", "1")   # used by some chroma versions
+        os.environ.setdefault("POSTHOG_DISABLED", "1")           # used by posthog client
+
+        # Silence chromadb telemetry loggers (regardless of whether telemetry is actually enabled).
+        for name in (
+            "chromadb.telemetry",
+            "chromadb.telemetry.product.posthog",
+        ):
+            lg = logging.getLogger(name)
+            lg.setLevel(logging.CRITICAL)
+            lg.propagate = False
+
         import chromadb
         from chromadb.config import Settings
-        import os
 
         if len(documents) != int(embeddings.shape[0]):
             raise ValueError("documents length must match embeddings rows")
@@ -69,9 +91,7 @@ class ChromaCosineIndex:
         self._persist_dir = persist_dir
         self._collection_name = collection_name
 
-        # Disable anonymized telemetry to avoid noisy errors in some environments.
-        # (Some dependency combinations can cause posthog capture signature issues.)
-        os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+        # Disable anonymized telemetry explicitly (in addition to env var guards above).
         client = chromadb.PersistentClient(path=persist_dir, settings=Settings(anonymized_telemetry=False))
         # Rebuild collection if count mismatches (simple correctness guard).
         col = client.get_or_create_collection(name=collection_name, metadata={"hnsw:space": "cosine"})

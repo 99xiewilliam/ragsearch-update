@@ -5,6 +5,7 @@ from typing import List, Tuple
 
 import pandas as pd
 import json
+import numpy as np
 
 from .types import Doc, QAExample
 
@@ -12,8 +13,43 @@ from .types import Doc, QAExample
 def _to_list_str(x) -> List[str]:
     if x is None:
         return [""]
+    # Parquet may load list-like columns as numpy arrays
+    if isinstance(x, np.ndarray):
+        try:
+            x = x.tolist()
+        except Exception:
+            x = [str(v) for v in list(x)]
     if isinstance(x, list):
-        return [str(v) for v in x if str(v).strip()] or [""]
+        out: List[str] = []
+        for v in x:
+            if v is None:
+                continue
+            s = str(v).strip()
+            if not s:
+                continue
+            # Some datasets store a list-of-strings where each element is itself a stringified list,
+            # e.g. ["['Prussian']"]. Try to unwrap once.
+            if s.startswith("[") and s.endswith("]"):
+                # Try JSON first
+                try:
+                    obj = json.loads(s)
+                    if isinstance(obj, list):
+                        out.extend([str(t).strip() for t in obj if str(t).strip()])
+                        continue
+                except Exception:
+                    pass
+                # Fallback to Python literal list
+                try:
+                    import ast
+
+                    obj = ast.literal_eval(s)
+                    if isinstance(obj, list):
+                        out.extend([str(t).strip() for t in obj if str(t).strip()])
+                        continue
+                except Exception:
+                    pass
+            out.append(s)
+        return out or [""]
     # Some parquet writers store lists as strings, e.g. "['82']" or '["82"]'
     if isinstance(x, str):
         s = x.strip()

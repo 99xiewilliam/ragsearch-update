@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 from typing import List
 
 import numpy as np
 
 from .device import auto_device
+from .hf_env import configure_hf_env
 
 
 @lru_cache(maxsize=8)
 def _st_model(model_name: str):
     from sentence_transformers import SentenceTransformer
+
+    # Best-effort: respect local HF cache + offline mode when provided via env.
+    # Users can set HF_HOME=/home/xwh/models/hf_cache and TRANSFORMERS_OFFLINE=1.
+    configure_hf_env(
+        hf_home=os.environ.get("HF_HOME", ""),
+        offline=bool(int(os.environ.get("TRANSFORMERS_OFFLINE", "0") or "0")),
+    )
 
     # Prefer CUDA, but if model load fails (e.g. bad CUDA / OOM), fall back to CPU.
     dev = auto_device()

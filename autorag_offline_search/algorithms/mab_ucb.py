@@ -26,37 +26,55 @@ class UCB1Bandit:
 
         counts = [0] * n_arms
         sums = [0.0] * n_arms
+        # Track arms that are permanently invalid under validate() to avoid repeated selection.
+        invalid = [False] * n_arms
         trials: List[Trial] = []
 
-        # initial pull each arm once if budget allows
-        for i in range(min(n_arms, int(inp.budget))):
+        max_attempts = max(10, int(inp.budget) * 50)
+        attempts = 0
+
+        # initial pull each arm once (best-effort) if budget allows
+        i = 0
+        while len(trials) < int(inp.budget) and i < n_arms and attempts < max_attempts:
+            attempts += 1
             tr = evaluate(inp, configs[i])
             if tr is None:
+                # Mark arm as invalid and skip
+                invalid[i] = True
+                i += 1
                 continue
             trials.append(tr)
             counts[i] += 1
             sums[i] += tr.reward
+            i += 1
 
-        t = len(trials)
-        while t < int(inp.budget):
+        while len(trials) < int(inp.budget) and attempts < max_attempts:
+            attempts += 1
             ucb_vals = []
             for i in range(n_arms):
-                if counts[i] == 0:
+                if invalid[i]:
+                    # Permanently invalid arm: assign -inf so it's never selected
+                    ucb_vals.append(float("-inf"))
+                elif counts[i] == 0:
                     ucb_vals.append(float("inf"))
                 else:
                     mean = sums[i] / counts[i]
-                    bonus = math.sqrt(2.0 * math.log(max(2, t)) / counts[i])
+                    t = max(2, len(trials))
+                    bonus = math.sqrt(2.0 * math.log(t) / counts[i])
                     ucb_vals.append(mean + bonus)
+
+            # If all arms are invalid, stop early
+            if all(v == float("-inf") for v in ucb_vals):
+                break
 
             arm = max(range(n_arms), key=lambda i: ucb_vals[i])
             tr = evaluate(inp, configs[arm])
             if tr is None:
-                # invalid under validate(); try next iteration
-                t += 1
+                # Mark arm as invalid so it won't be selected again
+                invalid[arm] = True
                 continue
             trials.append(tr)
             counts[arm] += 1
             sums[arm] += tr.reward
-            t += 1
 
         return SearchOutput(algo=self.name, trials=trials, best=best_trial(trials))

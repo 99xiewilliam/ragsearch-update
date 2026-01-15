@@ -6,6 +6,7 @@ from typing import Dict, List
 
 from tqdm import tqdm
 
+from .modules.logging_utils import log as _log
 from .metrics import (
     MetricsConfig,
     aggregate_reward,
@@ -29,6 +30,26 @@ class RunStats:
     chunks: int
 
 
+def _cfg_int(cfg: Dict, key: str, default: int = 0) -> int:
+    try:
+        return int(cfg.get(key, default))
+    except Exception:
+        return int(default)
+
+
+def _cfg_str(cfg: Dict, key: str, default: str = "") -> str:
+    try:
+        v = cfg.get(key, default)
+        return str(v) if v is not None else str(default)
+    except Exception:
+        return str(default)
+
+
+def _short(s: str, n: int) -> str:
+    t = str(s or "")
+    return (t[:n] + "...") if n > 0 and len(t) > n else t
+
+
 def evaluate_config(
     docs: List[Doc],
     qas: List[QAExample],
@@ -37,6 +58,7 @@ def evaluate_config(
     metrics_cfg: MetricsConfig,
     rag_factory: RagFactory,
     show_progress: bool = False,
+    split_name: str = "",
     dump_predictions_path: str | None = None,
     dump_item_prefix: Dict | None = None,
     dump_limit: int = 0,
@@ -81,10 +103,30 @@ def evaluate_config(
         if dump_item_prefix:
             dump_f.write(json.dumps({"_type": "meta", **dump_item_prefix}, ensure_ascii=False) + "\n")
 
+    # Debug/trace printing controls (intentionally independent from module_logs to avoid spam in TPE).
+    debug_n = max(0, _cfg_int(config, "debug_trace_n", 0))
+    debug_every = max(0, _cfg_int(config, "debug_trace_every", 0))
+    debug_max_chars = max(0, _cfg_int(config, "debug_trace_max_chars", 400))
+    debug_split = _cfg_str(config, "debug_trace_split", "both").strip().lower()
+    debug_trial = _cfg_int(config, "debug_trace_trial", 0)
+    debug_enabled = debug_n > 0
+    if debug_enabled:
+        if debug_split not in {"train", "validation", "val", "both"}:
+            debug_split = "both"
+        if split_name and debug_split != "both":
+            if debug_split == "val":
+                debug_split = "validation"
+            if debug_split != str(split_name).strip().lower():
+                debug_enabled = False
+        # optional frequency gating by trial index (set by experiment)
+        if debug_enabled and debug_every > 0 and debug_trial > 0 and (debug_trial % debug_every != 0):
+            debug_enabled = False
+
     it = tqdm(qas, desc="eval", disable=not show_progress)
-    for ex in it:
+    for ex_idx, ex in enumerate(it, start=1):
         trace = None
-        if dump_f is not None and hasattr(rag, "answer_with_trace"):
+        use_trace = (dump_f is not None or (debug_enabled and ex_idx <= debug_n)) and hasattr(rag, "answer_with_trace")
+        if use_trace:
             try:
                 trace = rag.answer_with_trace(ex.query)  # type: ignore[attr-defined]
                 pred = str((trace or {}).get("answer", "") or "")
@@ -114,6 +156,38 @@ def evaluate_config(
         if need_accuracy:
             # For now, treat accuracy as strict exact match over references.
             accs.append(compute_exact_match(pred, refs))
+
+        # Optional debug trace print (few examples only).
+        if debug_enabled and ex_idx <= debug_n:
+            ex_metrics_dbg: Dict[str, float] = {
+                "rougeL": float(r["rougeL"]),
+                "em": float(ems[-1]) if need_em else float(compute_exact_match(pred, refs)),
+                "qa_f1": float(f1s[-1]) if need_f1 else float(compute_qa_f1(pred, refs)),
+            }
+            head = f"[TRACE] split={split_name or '?'} trial={debug_trial or 0} ex={ex_idx} qid={ex.qid}"
+            _log(config, head)
+            _log(config, f"[TRACE] query={_short(ex.query, debug_max_chars)}")
+            _log(config, f"[TRACE] gold={_short(str(refs), debug_max_chars)}")
+            _log(config, f"[TRACE] pred={_short(pred, debug_max_chars)}")
+            _log(config, f"[TRACE] metrics={ex_metrics_dbg}")
+            if isinstance(trace, dict):
+                if "rewritten_query" in trace:
+                    _log(config, f"[TRACE] rewritten_query={_short(str(trace.get('rewritten_query','')), debug_max_chars)}")
+                if "retrieved" in trace:
+                    rr = trace.get("retrieved") or []
+                    if isinstance(rr, list) and rr:
+                        _log(config, "[TRACE] retrieved_top:")
+                        for it2 in rr[: min(10, len(rr))]:
+                            if isinstance(it2, dict):
+                                ii = it2.get("i", "")
+                                tx = _short(str(it2.get("text", "") or ""), debug_max_chars)
+                                _log(config, f"  - i={ii} text={tx}")
+                if "reranked_indices" in trace:
+                    _log(config, f"[TRACE] reranked_indices={trace.get('reranked_indices')}")
+                if "final_chunks" in trace:
+                    fc = trace.get("final_chunks") or []
+                    if isinstance(fc, list) and fc:
+                        _log(config, f"[TRACE] final_chunks(n={len(fc)}) preview0={_short(str(fc[0]), debug_max_chars)}")
 
         if need_bertscore or need_similarity:
             # Pick a single reference (best rougeL against pred) to keep it feasible.

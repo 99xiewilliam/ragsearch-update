@@ -28,10 +28,15 @@ class GreedyCoordinate:
         space = {k: list(v) for k, v in inp.space.items()}
         trials: List[Trial] = []
 
-        cur = self._random_init(space)
-        tr0 = evaluate(inp, cur)
+        # Random init can be rejected by validate(); retry a few times for robustness.
+        tr0 = None
+        max_attempts = 50
+        for _ in range(max_attempts):
+            cur = self._random_init(space)
+            tr0 = evaluate(inp, cur)
+            if tr0 is not None:
+                break
         if tr0 is None:
-            # If the random init is invalid under validate(), fall back to no-op.
             return SearchOutput(algo=self.name, trials=[], best=None)
 
         best = tr0

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Dict, Iterable, List, Sequence, Tuple
@@ -8,6 +9,7 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 from transformers import AutoTokenizer
 
 from ..types import Doc
+from .hf_env import configure_hf_env
 
 
 _SENT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -21,6 +23,10 @@ def _words(text: str) -> List[str]:
 
 @lru_cache(maxsize=8)
 def _tokenizer(model: str):
+    configure_hf_env(
+        hf_home=os.environ.get("HF_HOME", ""),
+        offline=bool(int(os.environ.get("TRANSFORMERS_OFFLINE", "0") or "0")),
+    )
     return AutoTokenizer.from_pretrained(model, use_fast=True)
 
 

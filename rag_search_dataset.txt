@@ -6,21 +6,12 @@ https://huggingface.co/datasets/PatronusAI/financebench   financebench数据集�
 
 https://huggingface.co/datasets/hotpotqa/hotpot_qa     hotpotqa数据集，使用fullwiki进行大海捞针查询，使用f1-score（不是bertf1）
 
-https://huggingface.co/datasets/zai-org/LongBench/tree/main   longbench数据集，长上下文的多个子任务，使用官方评估：https://github.com/THUDM/LongBench
+https://huggingface.co/datasets/zai
+-org/LongBench/tree/main   longbench数据集，长上下文的多个子任务，使用官方评估：https://github.com/THUDM/LongBench
 
 
 
-Graph Rag
-
-https://huggingface.co/datasets/GraphRAG-Bench/GraphRAG-Bench   图rag检索标准，有边和节点，使用官方开源评估：https://github.com/GraphRAG-Bench/GraphRAG-Benchmark
-
-https://huggingface.co/datasets/hotpotqa/hotpot_qa     hotpotqa数据集，使用fullwiki进行构图+检索，使用f1-score
-
-https://huggingface.co/datasets/yixuantt/MultiHopRAG   multihoprag数据集，使用文档片段进行构图+检索，使用官方开源评估系统：https://github.com/yixuantt/MultiHop-RAG
-
-
-
-Picture Rag
+Multimodal Rag
 
 https://huggingface.co/datasets/MMMU/MMMU/viewer/Accounting/dev?row=0    MMMU数据集，开卷考试（VQA），根据图片回答问题，包含图片以及根据图片内容的问答共415条，评估exact match （字符串匹配）
 

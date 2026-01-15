@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 from typing import List
 
 import numpy as np
 
 from .device import auto_device
+from .hf_env import configure_hf_env
 
 
 @lru_cache(maxsize=8)
 def _ce(model_name: str):
     from sentence_transformers import CrossEncoder
+
+    # Best-effort: respect local HF cache + offline mode when provided via env.
+    configure_hf_env(
+        hf_home=os.environ.get("HF_HOME", ""),
+        offline=bool(int(os.environ.get("TRANSFORMERS_OFFLINE", "0") or "0")),
+    )
 
     # Prefer CUDA, but if model load fails (e.g. bad CUDA / OOM), fall back to CPU.
     dev = auto_device()

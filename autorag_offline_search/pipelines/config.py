@@ -23,7 +23,7 @@ def resolve_model(model_id_or_path: str) -> str:
 
 @dataclass(frozen=True)
 class NormalizedConfig:
-    pipeline: str  # "common" | "graph" | "multimodal"
+    pipeline: str  # "common" | "multimodal"
     llm_base_url: str
     # rewriter
     rewriter_enabled: bool
@@ -43,6 +43,8 @@ class NormalizedConfig:
     retriever: str  # "cosine" | "bm25" | "hybrid"
     retriever_topk: int
     hybrid_alpha: float
+    # unified retrieval knob (bm25 weight in [0,1])
+    bm25_weight: float
     # rerank
     reranker_enabled: bool
     reranker_model: str  # "none" or cross-encoder model name
@@ -55,15 +57,6 @@ class NormalizedConfig:
     # generator (fixed prompt, but model can be configured as a "non-hyperparam")
     generator_model: str
     generator_max_tokens: int
-    # graph
-    graph_expand_enabled: bool
-    graph_mode: str  # "global" | "local" | "hybrid"
-    graph_edge_source: str  # "provided" | "structure" | "knn" | "keyword"
-    graph_edges_path: str
-    graph_hops: int
-    graph_seed_topk: int
-    graph_neighbor_topk: int
-    graph_max_expanded: int
     # multimodal
     multimodal_metadata_enabled: bool
     # logging
@@ -73,7 +66,7 @@ class NormalizedConfig:
 def normalize_config(cfg: Dict) -> NormalizedConfig:
     c = dict(cfg or {})
     pipeline = str(c.get("pipeline", "common"))
-    if pipeline not in {"common", "graph", "multimodal"}:
+    if pipeline not in {"common", "multimodal"}:
         raise ValueError(f"Unknown pipeline: {pipeline}")
 
     llm_base_url = str(c.get("llm_base_url", "") or "")
@@ -89,7 +82,10 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
         rewriter_prompt = str(REWRITER_PROMPTS.get(pid, REWRITER_PROMPTS["rewrite_v1"]))
     else:
         rewriter_prompt = str(c.get("rewriter_prompt", REWRITER_PROMPTS["rewrite_v1"]))
-    rewriter_max_tokens = int(c.get("rewriter_max_tokens", 128))
+    # NOTE: rewriter_max_tokens is an *output* token budget for vLLM/OpenAI.
+    # Many users confuse it with context length (e.g. 32768). We default to 32678 as a
+    # sentinel meaning "no explicit max_tokens" (see OpenAICompatLLM.generate()).
+    rewriter_max_tokens = int(c.get("rewriter_max_tokens", 32678))
 
     chunking_enabled = bool(c.get("chunking_enabled", True))
     chunking_method = str(c.get("chunking_method", "semantic"))
@@ -102,11 +98,49 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
     embedding_enabled = bool(c.get("embedding_enabled", True))
     embedder_model = str(c.get("embedder_model", "BAAI/bge-m3"))
 
-    retriever = str(c.get("retriever", "cosine"))
-    if retriever not in {"cosine", "bm25", "hybrid"}:
-        raise ValueError(f"Unknown retriever: {retriever}")
+    # Unified retrieval knob:
+    # - bm25_weight=0   => cosine
+    # - bm25_weight=1   => bm25 (auto-disable embedding)
+    # - (0,1)           => hybrid, with hybrid_alpha=bm25_weight
+    eps = 1e-6
+    bm25_weight_raw = c.get("bm25_weight", None)
+    if bm25_weight_raw is not None and str(bm25_weight_raw).strip() != "":
+        bm25_weight = float(bm25_weight_raw)
+        if not (0.0 <= bm25_weight <= 1.0):
+            raise ValueError("bm25_weight must be in [0,1]")
+        if bm25_weight <= eps:
+            retriever = "cosine"
+            hybrid_alpha = 0.5
+            embedding_enabled = True if "embedding_enabled" not in c else embedding_enabled
+            bm25_weight = 0.0
+        elif bm25_weight >= 1.0 - eps:
+            retriever = "bm25"
+            hybrid_alpha = 0.5
+            embedding_enabled = False
+            bm25_weight = 1.0
+        else:
+            retriever = "hybrid"
+            hybrid_alpha = float(bm25_weight)
+            embedding_enabled = True if "embedding_enabled" not in c else embedding_enabled
+    else:
+        # Backward compatible: accept explicit retriever/hybrid_alpha.
+        retriever = str(c.get("retriever", "cosine"))
+        if retriever not in {"cosine", "bm25", "hybrid"}:
+            raise ValueError(f"Unknown retriever: {retriever}")
+        hybrid_alpha = float(c.get("hybrid_alpha", 0.5))
+        if retriever == "cosine":
+            bm25_weight = 0.0
+        elif retriever == "bm25":
+            bm25_weight = 1.0
+            # If user explicitly chooses bm25, embedding isn't needed.
+            embedding_enabled = False if "embedding_enabled" not in c else embedding_enabled
+        else:
+            # hybrid: interpret hybrid_alpha as bm25 weight
+            if not (0.0 <= hybrid_alpha <= 1.0):
+                raise ValueError("hybrid_alpha must be in [0,1] for hybrid retriever")
+            bm25_weight = float(hybrid_alpha)
+
     retriever_topk = int(c.get("retriever_topk", 10))
-    hybrid_alpha = float(c.get("hybrid_alpha", 0.5))
 
     reranker_enabled = bool(c.get("reranker_enabled", True))
     reranker_model = str(c.get("reranker_model", "none"))
@@ -114,37 +148,22 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
 
     pruner_enabled = bool(c.get("pruner_enabled", False))
     pruner_model = str(c.get("pruner_model", "qwen3"))
-    if "pruner_prompt_id" in c and str(c.get("pruner_prompt_id") or "").strip():
-        pid = str(c.get("pruner_prompt_id"))
-        pruner_prompt = str(PRUNER_PROMPTS.get(pid, PRUNER_PROMPTS["prune_v1"]))
-    else:
-        pruner_prompt = str(c.get("pruner_prompt", PRUNER_PROMPTS["prune_v1"]))
-    pruner_max_tokens = int(c.get("pruner_max_tokens", 128))
+    # pruner prompt is fixed (not a hyperparam); keep it stable for fair comparisons.
+    pruner_prompt = str(PRUNER_PROMPTS["prune_v1"])
+    # Same sentinel convention as rewriter_max_tokens.
+    pruner_max_tokens = int(c.get("pruner_max_tokens", 32678))
 
     # Generator prompt is fixed, but generator *model* can be overridden by YAML/CLI.
     # We make the default model pipeline-aware:
-    # - common/graph: text LLM (qwen3)
+    # - common      : text LLM (qwen3)
     # - multimodal  : VL LLM (qwen3_vl_4b)
     if "generator_model" in c and str(c.get("generator_model") or "").strip():
         generator_model = str(c.get("generator_model"))
     else:
         generator_model = "qwen3_vl_4b" if pipeline == "multimodal" else "qwen3"
-    generator_max_tokens = int(c.get("generator_max_tokens", 128))
-
-    graph_expand_enabled = bool(c.get("graph_expand_enabled", True))
-    graph_mode = str(c.get("graph_mode", "hybrid"))
-    if graph_mode not in {"global", "local", "hybrid"}:
-        raise ValueError(f"Unknown graph_mode: {graph_mode}")
-    graph_edge_source = str(c.get("graph_edge_source", c.get("graph_builder", "keyword")))
-    if graph_edge_source not in {"provided", "structure", "knn", "keyword"}:
-        raise ValueError(f"Unknown graph_edge_source: {graph_edge_source}")
-    graph_edges_path = str(c.get("graph_edges_path", "") or "")
-    graph_hops = int(c.get("graph_hops", 1))
-    if graph_hops <= 0:
-        raise ValueError("graph_hops must be >= 1")
-    graph_seed_topk = int(c.get("graph_seed_topk", min(3, retriever_topk)))
-    graph_neighbor_topk = int(c.get("graph_neighbor_topk", 50))
-    graph_max_expanded = int(c.get("graph_max_expanded", max(200, int(retriever_topk) * 10)))
+    # NOTE: generator_max_tokens is an *output* token budget for vLLM/OpenAI.
+    # Use 32768 as a sentinel meaning "no explicit max_tokens" (see OpenAICompatLLM.generate()).
+    generator_max_tokens = int(c.get("generator_max_tokens", 32768))
     multimodal_metadata_enabled = bool(c.get("multimodal_metadata_enabled", True))
     module_logs = bool(c.get("module_logs", False))
 
@@ -171,6 +190,7 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
         retriever=retriever,
         retriever_topk=retriever_topk,
         hybrid_alpha=hybrid_alpha,
+        bm25_weight=float(bm25_weight),
         reranker_enabled=reranker_enabled,
         reranker_model=reranker_model,
         rerank_topk=rerank_topk,
@@ -180,14 +200,6 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
         pruner_max_tokens=pruner_max_tokens,
         generator_model=generator_model,
         generator_max_tokens=generator_max_tokens,
-        graph_expand_enabled=graph_expand_enabled,
-        graph_mode=graph_mode,
-        graph_edge_source=graph_edge_source,
-        graph_edges_path=graph_edges_path,
-        graph_hops=graph_hops,
-        graph_seed_topk=graph_seed_topk,
-        graph_neighbor_topk=graph_neighbor_topk,
-        graph_max_expanded=graph_max_expanded,
         multimodal_metadata_enabled=multimodal_metadata_enabled,
         module_logs=module_logs,
     )

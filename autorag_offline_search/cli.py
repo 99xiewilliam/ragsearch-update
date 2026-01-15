@@ -49,6 +49,50 @@ def _parse_args() -> argparse.Namespace:
         default=0,
         help="Override GRPO group size (0 = auto). Group size consumes budget.",
     )
+    # TPE (Optuna) early stop controls (optional; budget is still an upper bound)
+    p.add_argument(
+        "--tpe_patience",
+        type=int,
+        default=0,
+        help="TPE early stop: stop if best reward doesn't improve for this many valid trials (0 = disabled).",
+    )
+    p.add_argument(
+        "--tpe_min_delta",
+        type=float,
+        default=0.0,
+        help="TPE early stop: required improvement over best reward to be considered progress.",
+    )
+    p.add_argument(
+        "--tpe_warmup",
+        type=int,
+        default=0,
+        help="TPE early stop: do not early-stop until at least this many valid trials are collected.",
+    )
+    # Debug trace (printed via eval.py using answer_with_trace + gold refs)
+    p.add_argument(
+        "--debug_trace_n",
+        type=int,
+        default=0,
+        help="Print full trace (gold + rewriter/retrieve/rerank/prune/generate) for first N examples in an eval call (0=disable).",
+    )
+    p.add_argument(
+        "--debug_trace_every",
+        type=int,
+        default=0,
+        help="Only print debug trace every N-th trial during training search (0=always when enabled).",
+    )
+    p.add_argument(
+        "--debug_trace_max_chars",
+        type=int,
+        default=400,
+        help="Max chars per printed field in debug trace (truncate long contexts).",
+    )
+    p.add_argument(
+        "--debug_trace_split",
+        type=str,
+        default="both",
+        help="Which split to print debug traces for: train|validation|both.",
+    )
     p.add_argument(
         "--rag_plugin",
         type=str,
@@ -89,7 +133,7 @@ def _parse_args() -> argparse.Namespace:
         "--pipeline",
         type=str,
         default="",
-        help="Pipeline category: common|graph|multimodal. If set, overrides space/config.",
+        help="Pipeline category: common|multimodal. If set, overrides space/config.",
     )
     p.add_argument(
         "--generator_model",
@@ -102,6 +146,12 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Generator max tokens (prompt is fixed). If set (>0), overrides space/config.",
+    )
+    p.add_argument(
+        "--bm25_weight",
+        type=float,
+        default=-1.0,
+        help="Unified retrieval knob in [0,1]: 0=cosine, 1=bm25, (0,1)=hybrid. If set (>=0), overrides space/config.",
     )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
@@ -162,6 +212,13 @@ def main() -> None:
             metrics_cfg=metrics_cfg,
             seed=args.seed,
             grpo_group_size=args.grpo_group_size,
+            tpe_patience=args.tpe_patience,
+            tpe_min_delta=args.tpe_min_delta,
+            tpe_warmup=args.tpe_warmup,
+            debug_trace_n=args.debug_trace_n,
+            debug_trace_every=args.debug_trace_every,
+            debug_trace_max_chars=args.debug_trace_max_chars,
+            debug_trace_split=args.debug_trace_split,
             rag_plugin=args.rag_plugin,
             space_plugin=args.space_plugin,
             cache_dir=args.cache_dir,
@@ -170,6 +227,7 @@ def main() -> None:
             pipeline=args.pipeline,
             generator_model=args.generator_model,
             generator_max_tokens=args.generator_max_tokens,
+            bm25_weight=args.bm25_weight,
             config_base=base_cfg,
             verbose=args.verbose,
             log_every=args.log_every,
@@ -194,6 +252,13 @@ def main() -> None:
             metrics_cfg=metrics_cfg,
             seed=args.seed,
             grpo_group_size=args.grpo_group_size,
+            tpe_patience=args.tpe_patience,
+            tpe_min_delta=args.tpe_min_delta,
+            tpe_warmup=args.tpe_warmup,
+            debug_trace_n=args.debug_trace_n,
+            debug_trace_every=args.debug_trace_every,
+            debug_trace_max_chars=args.debug_trace_max_chars,
+            debug_trace_split=args.debug_trace_split,
             rag_plugin=args.rag_plugin,
             space_plugin=args.space_plugin,
             cache_dir=args.cache_dir,
@@ -202,6 +267,7 @@ def main() -> None:
             pipeline=args.pipeline,
             generator_model=args.generator_model,
             generator_max_tokens=args.generator_max_tokens,
+            bm25_weight=args.bm25_weight,
             config_base=base_cfg,
             verbose=args.verbose,
             log_every=args.log_every,

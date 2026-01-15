@@ -1,0 +1,51 @@
+# HotPotQA + common pipeline: TPE search config (base + space)
+#
+# Why this file exists:
+# - Your previous smoke config (hotpotqa_common_smoke.yaml) pins many knobs as fixed scalars.
+#   In this repo, YAML scalars are treated as "fixed base" and will OVERRIDE algorithm proposals,
+#   making every trial identical.
+# - This file uses the structured form:
+#     base:  { fixed defaults }
+#     space: { searchable candidates / ranges }
+#
+# Notes:
+# - `--train_trials` is still the upper bound; use `--tpe_patience/--tpe_min_delta/--tpe_warmup`
+#   to early-stop when it converges.
+# - For a fast first run, keep the dataset small (e.g. 20) and start with ~50-200 trials.
+
+base:
+  pipeline: common
+  # Generator: must match the model name/path exposed by your OpenAI-compatible endpoint.
+  generator_model: "/home/xwh/models/Qwen3-4B-Instruct-2507"
+  generator_max_tokens: 32768
+
+space:
+  # IMPORTANT (no-download / demo-friendly):
+  # If your machine cannot reliably reach huggingface.co, TPE may sample models that trigger downloads
+  # (e.g. intfloat/e5-large-v2, cross-encoders). Pin them to a known-available model to avoid timeouts.
+  embedder_model: ["BAAI/bge-m3"]
+  reranker_model: ["none"]
+
+  # Unified retrieval knob: 0=cosine, 1=bm25, (0,1)=hybrid
+  bm25_weight:
+    low: 0.0
+    high: 1.0
+    steps: 6
+  retriever_topk: [3, 5, 10]
+
+  # Chunking
+  chunking_enabled: [false, true]
+  chunk_size: [256, 512]
+
+  # Query rewrite
+  rewriter_enabled: [false, true]
+  rewriter_prompt_id: ["rewrite_v1", "rewrite_v2_keywords"]
+
+  # Rerank
+  reranker_enabled: [false, true]
+  reranker_model: ["none", "cross-encoder/ms-marco-MiniLM-L-6-v2"]
+  rerank_topk: [3, 5, 10]
+
+  # Prune
+  pruner_enabled: [false, true]
+

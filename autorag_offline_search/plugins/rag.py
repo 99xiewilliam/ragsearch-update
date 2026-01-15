@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, Sequence
 
-from ..pipelines import CommonRagPipeline, GraphRagPipeline, MultiModalRagPipeline
+from ..pipelines import CommonRagPipeline, MultiModalRagPipeline
 from ..pipelines.config import normalize_config
 from ..types import Doc
 
@@ -10,15 +10,13 @@ from ..types import Doc
 class UnifiedRag:
     """
     New default RAG plugin.
-    The config must contain `pipeline` in {"common","graph","multimodal"} (default: common).
+    The config must contain `pipeline` in {"common","multimodal"} (default: common).
     """
 
     def __init__(self, docs: Sequence[Doc], config: Dict):
         cfg = normalize_config(config or {})
         if cfg.pipeline == "common":
             self._pipe = CommonRagPipeline(docs, config)
-        elif cfg.pipeline == "graph":
-            self._pipe = GraphRagPipeline(docs, config)
         elif cfg.pipeline == "multimodal":
             self._pipe = MultiModalRagPipeline(docs, config)
         else:

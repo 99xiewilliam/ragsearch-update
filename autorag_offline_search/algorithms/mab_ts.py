@@ -32,7 +32,10 @@ class ThompsonSamplingGaussian:
         means = [0.0] * n_arms
         trials: List[Trial] = []
 
-        for _t in range(int(inp.budget)):
+        max_attempts = max(10, int(inp.budget) * 50)
+        attempts = 0
+        while len(trials) < int(inp.budget) and attempts < max_attempts:
+            attempts += 1
             samples = []
             for i in range(n_arms):
                 mu = means[i]

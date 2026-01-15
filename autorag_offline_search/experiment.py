@@ -43,6 +43,13 @@ def run_one_algorithm(
     train_trials: int,
     seed: int,
     grpo_group_size: int = 0,
+    tpe_patience: int = 0,
+    tpe_min_delta: float = 0.0,
+    tpe_warmup: int = 0,
+    debug_trace_n: int = 0,
+    debug_trace_every: int = 0,
+    debug_trace_max_chars: int = 400,
+    debug_trace_split: str = "both",
     config_base: Optional[Dict] = None,
     config_inject: Optional[Dict] = None,
     verbose: bool = False,
@@ -85,6 +92,17 @@ def run_one_algorithm(
             cfg = {**cfg, **config_base}
         if config_inject:
             cfg = {**cfg, **config_inject}
+        # Debug/trace controls (evaluated per objective call / trial)
+        # Note: we keep these keys in config (not in eval kwargs) so Rag implementations can also
+        # optionally read them in the future.
+        cfg = {
+            **cfg,
+            "debug_trace_n": int(debug_trace_n),
+            "debug_trace_every": int(debug_trace_every),
+            "debug_trace_max_chars": int(debug_trace_max_chars),
+            "debug_trace_split": str(debug_trace_split),
+            "debug_trace_trial": int(seen + 1),
+        }
         res, stats = evaluate_config(
             docs_train,
             qas_train,
@@ -92,6 +110,7 @@ def run_one_algorithm(
             metrics_cfg=metrics_cfg,
             rag_factory=rag_factory,
             show_progress=show_eval_progress,
+            split_name="train",
         )
         tr = Trial(config=cfg, reward=res.weighted_reward, metrics=res.per_metric, seconds=stats.seconds)
         seen += 1
@@ -128,7 +147,12 @@ def run_one_algorithm(
             # This allows running grpo-only (or other algos) in environments without optuna.
             from .algorithms.tpe_optuna import TPESearch
 
-            return TPESearch(seed=seed_for_algo)
+            return TPESearch(
+                seed=seed_for_algo,
+                patience=int(tpe_patience),
+                min_delta=float(tpe_min_delta),
+                warmup=int(tpe_warmup),
+            )
         if name == "ucb1":
             # UCB1 不使用 seed
             return UCB1Bandit()
@@ -299,26 +323,9 @@ def run_one_algorithm(
     if best is None:
         raise RuntimeError("No trials produced")
 
-    # Optional: compute "global retrieval" best on the same train trials, so users can
-    # quickly see whether graph expansion brings gains.
-    def _is_global_baseline(cfg: Dict) -> bool:
-        try:
-            if str(cfg.get("pipeline", "") or "") != "graph":
-                return False
-            if bool(cfg.get("graph_expand_enabled", True)) is False:
-                return True
-            if str(cfg.get("graph_mode", "") or "") == "global":
-                return True
-        except Exception:
-            return False
-        return False
-
+    # GraphRAG has been removed from this repo; keep these fields for backward-compatible
+    # result schema (always None).
     best_global: Optional[Trial] = None
-    for t in train_trial_list:
-        if not _is_global_baseline(t.config):
-            continue
-        if best_global is None or t.reward > best_global.reward:
-            best_global = t
 
     # validate once with best config
     val_res, val_stats = evaluate_config(
@@ -328,6 +335,7 @@ def run_one_algorithm(
         metrics_cfg=metrics_cfg,
         rag_factory=rag_factory,
         show_progress=show_eval_progress,
+        split_name="validation",
         dump_predictions_path=dump_val_predictions_path,
         dump_item_prefix={
             "split": "validation",
@@ -339,32 +347,7 @@ def run_one_algorithm(
         dump_limit=int(dump_val_limit) if dump_val_limit else 0,
     )
 
-    # For graph pipeline, also evaluate a deterministic "global baseline" config:
-    # same config as best, but disable expansion (global retrieval only).
     val_global = None
-    try:
-        if str(best.config.get("pipeline", "") or "") == "graph":
-            baseline_cfg = dict(best.config)
-            baseline_cfg["graph_expand_enabled"] = False
-            baseline_cfg["graph_mode"] = "global"
-            val_g_res, val_g_stats = evaluate_config(
-                docs_val,
-                qas_val,
-                baseline_cfg,
-                metrics_cfg=metrics_cfg,
-                rag_factory=rag_factory,
-                show_progress=show_eval_progress,
-            )
-            val_global = {
-                "reward": val_g_res.weighted_reward,
-                "seconds": val_g_stats.seconds,
-                "metrics": val_g_res.per_metric,
-                "config": baseline_cfg,
-                "config_str": config_to_str(baseline_cfg),
-                "delta_vs_best": float(val_res.weighted_reward - val_g_res.weighted_reward),
-            }
-    except Exception:
-        val_global = None
 
     return {
         "algo": algo_name,
@@ -417,6 +400,13 @@ def run_dataset(
     metrics_cfg: MetricsConfig,
     seed: int = 42,
     grpo_group_size: int = 0,
+    tpe_patience: int = 0,
+    tpe_min_delta: float = 0.0,
+    tpe_warmup: int = 0,
+    debug_trace_n: int = 0,
+    debug_trace_every: int = 0,
+    debug_trace_max_chars: int = 400,
+    debug_trace_split: str = "both",
     rag_plugin: str = "",
     space_plugin: str = "",
     cache_dir: str = "",
@@ -425,6 +415,7 @@ def run_dataset(
     pipeline: str = "",
     generator_model: str = "",
     generator_max_tokens: int = 0,
+    bm25_weight: float = -1.0,
     config_base: Optional[Dict] = None,
     verbose: bool = False,
     log_every: int = 1,
@@ -442,7 +433,7 @@ def run_dataset(
     if rag_plugin:
         rag_factory = load_object(rag_plugin)
     else:
-        # New default: unified modular RAG (common/graph/multimodal).
+        # New default: unified modular RAG (common/multimodal).
         from .plugins.rag import UnifiedRag
 
         rag_factory = UnifiedRag
@@ -477,15 +468,44 @@ def run_dataset(
             space_overrides[k] = list(v)
             fixed_base.pop(k, None)
 
+    def _expand_range(v: Any) -> Optional[Sequence]:
+        """
+        Allow YAML to specify a numeric range and expand to a discrete grid.
+
+        Examples:
+          bm25_weight:
+            low: 0
+            high: 1
+            steps: 11
+        """
+        if not isinstance(v, dict):
+            return None
+        # accept both low/high and min/max
+        if ("low" in v and "high" in v) or ("min" in v and "max" in v):
+            lo = float(v.get("low", v.get("min")))
+            hi = float(v.get("high", v.get("max")))
+            steps = int(v.get("steps", v.get("n", 11)))
+            if steps <= 0:
+                raise ValueError("range steps must be > 0")
+            if steps == 1:
+                return (lo,)
+            # inclusive linspace without numpy
+            return tuple(lo + (hi - lo) * i / (steps - 1) for i in range(steps))
+        return None
+
     if space_overrides:
         pipeline_hint = str(fixed_base.get("pipeline") or "")
         # If user pins pipeline in base, also restrict the enumerated search space pipeline.
         # Otherwise, configs generated for other pipelines may leak in, and then get "re-labeled"
         # as multimodal via merge, causing model mismatches (e.g., qwen3 text model in multimodal).
-        if pipeline_hint in {"common", "graph", "multimodal"} and hasattr(space, "pipeline"):
+        if pipeline_hint in {"common", "multimodal"} and hasattr(space, "pipeline"):
             space = dataclasses.replace(space, pipeline=(pipeline_hint,))
         for k, v in list(space_overrides.items()):
-            vv = tuple(v) if isinstance(v, (list, tuple)) else (v,)
+            expanded = _expand_range(v)
+            if expanded is not None:
+                vv = tuple(expanded)
+            else:
+                vv = tuple(v) if isinstance(v, (list, tuple)) else (v,)
             # pipeline-aware mapping for multimodal vs common
             if k == "embedder_model":
                 if pipeline_hint == "multimodal" and hasattr(space, "multimodal_embedder_model"):
@@ -517,7 +537,7 @@ def run_dataset(
     else:
         # No explicit space overrides, but still honor pinned pipeline in base (if any).
         pipeline_hint = str(fixed_base.get("pipeline") or "")
-        if pipeline_hint in {"common", "graph", "multimodal"} and hasattr(space, "pipeline"):
+        if pipeline_hint in {"common", "multimodal"} and hasattr(space, "pipeline"):
             space = dataclasses.replace(space, pipeline=(pipeline_hint,))
 
     results: Dict[str, Dict] = {}
@@ -537,6 +557,8 @@ def run_dataset(
         inject["generator_model"] = str(generator_model)
     if generator_max_tokens and int(generator_max_tokens) > 0:
         inject["generator_max_tokens"] = int(generator_max_tokens)
+    if bm25_weight is not None and float(bm25_weight) >= 0.0:
+        inject["bm25_weight"] = float(bm25_weight)
 
     # Multi-GPU Parallel execution
     # Determine GPU IDs to use
@@ -589,6 +611,13 @@ def run_dataset(
                     "train_trials": train_trials,
                     "seed": seed,
                     "grpo_group_size": grpo_group_size,
+                    "tpe_patience": tpe_patience,
+                    "tpe_min_delta": tpe_min_delta,
+                    "tpe_warmup": tpe_warmup,
+                    "debug_trace_n": debug_trace_n,
+                    "debug_trace_every": debug_trace_every,
+                    "debug_trace_max_chars": debug_trace_max_chars,
+                    "debug_trace_split": debug_trace_split,
                     "config_base": fixed_base,
                     "config_inject": inject,
                     "verbose": verbose,
@@ -619,6 +648,13 @@ def run_dataset(
                 train_trials=train_trials,
                 seed=seed,
                 grpo_group_size=grpo_group_size,
+                tpe_patience=tpe_patience,
+                tpe_min_delta=tpe_min_delta,
+                tpe_warmup=tpe_warmup,
+                debug_trace_n=debug_trace_n,
+                debug_trace_every=debug_trace_every,
+                debug_trace_max_chars=debug_trace_max_chars,
+                debug_trace_split=debug_trace_split,
                 config_base=fixed_base,
                 config_inject=inject,
                 verbose=verbose,
