@@ -54,6 +54,7 @@ class NormalizedConfig:
     pruner_model: str
     pruner_prompt: str
     pruner_max_tokens: int
+    pruner_mode: str  # "select" (choose chunks) or "compress" (compress each chunk)
     # generator (fixed prompt, but model can be configured as a "non-hyperparam")
     generator_model: str
     generator_max_tokens: int
@@ -148,8 +149,15 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
 
     pruner_enabled = bool(c.get("pruner_enabled", False))
     pruner_model = str(c.get("pruner_model", "qwen3"))
-    # pruner prompt is fixed (not a hyperparam); keep it stable for fair comparisons.
-    pruner_prompt = str(PRUNER_PROMPTS["prune_v1"])
+    pruner_mode = str(c.get("pruner_mode", "select")).strip().lower()
+    if pruner_mode not in {"select", "compress"}:
+        pruner_mode = "select"
+    # pruner prompt: use compress_v1 if mode is compress, otherwise prune_v1
+    if pruner_mode == "compress":
+        pruner_prompt = str(PRUNER_PROMPTS.get("compress_v1", PRUNER_PROMPTS["prune_v1"]))
+    else:
+        # pruner prompt is fixed (not a hyperparam); keep it stable for fair comparisons.
+        pruner_prompt = str(PRUNER_PROMPTS["prune_v1"])
     # Same sentinel convention as rewriter_max_tokens.
     pruner_max_tokens = int(c.get("pruner_max_tokens", 32678))
 
@@ -198,6 +206,7 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
         pruner_model=pruner_model,
         pruner_prompt=pruner_prompt,
         pruner_max_tokens=pruner_max_tokens,
+        pruner_mode=pruner_mode,
         generator_model=generator_model,
         generator_max_tokens=generator_max_tokens,
         multimodal_metadata_enabled=multimodal_metadata_enabled,

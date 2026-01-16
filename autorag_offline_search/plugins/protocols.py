@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Protocol, Sequence
+from typing import Dict, List, Protocol, Sequence
 
 from ..types import Doc
 

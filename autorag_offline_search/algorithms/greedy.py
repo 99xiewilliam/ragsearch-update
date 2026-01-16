@@ -4,7 +4,7 @@ import random
 from dataclasses import dataclass
 from typing import Dict, List, Sequence
 
-from .base import SearchInput, SearchOutput, Trial, best_trial, evaluate
+from .base import SearchInput, SearchOutput, Trial, evaluate
 
 
 @dataclass

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Sequence
 
 
 @dataclass(frozen=True)

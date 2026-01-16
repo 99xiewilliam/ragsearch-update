@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 import numpy as np
 

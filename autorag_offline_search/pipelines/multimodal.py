@@ -316,9 +316,10 @@ class MultiModalRagPipeline(CommonRagPipeline):
             images_uniq.append(p)
         images = images_uniq[:2]
 
-        log(self.cfg, f"[COMMON:pruner] enabled={self.cfg.pruner_enabled} model={self.cfg.pruner_model} max_tokens={self.cfg.pruner_max_tokens}")
+        log(self.cfg, f"[COMMON:pruner] enabled={self.cfg.pruner_enabled} model={self.cfg.pruner_model} mode={self.cfg.pruner_mode} max_tokens={self.cfg.pruner_max_tokens}")
         if self.cfg.pruner_enabled:
             log_kv(self.cfg, prefix="[COMMON:pruner] ", key="prompt", value=self.cfg.pruner_prompt, limit=240)
+            log(self.cfg, f"[COMMON:pruner] input_chunks={len(final)}")
         final = prune_chunks(
             query=q,
             chunks=final,
@@ -327,11 +328,17 @@ class MultiModalRagPipeline(CommonRagPipeline):
                 model=self.cfg.pruner_model,
                 prompt=self.cfg.pruner_prompt,
                 max_tokens=self.cfg.pruner_max_tokens,
+                mode=self.cfg.pruner_mode,
             ),
             llm_base_url=self.cfg.llm_base_url,
             model_resolver=resolve_model,
         )
         log(self.cfg, f"[COMMON:pruner] final_chunks={len(final)}")
+        if final:
+            preview = "\n\n---\n\n".join(final[:3])  # Show first 3 chunks
+            if len(final) > 3:
+                preview += f"\n\n... (and {len(final) - 3} more chunks)"
+            log_kv(self.cfg, prefix="[COMMON:pruner] ", key="pruned_content", value=preview, limit=400)
 
         ctx = "\n\n---\n\n".join(final)
         log(self.cfg, f"[COMMON:generator] model={self.cfg.generator_model} max_tokens={self.cfg.generator_max_tokens}")

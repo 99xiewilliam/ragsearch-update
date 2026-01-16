@@ -1,0 +1,42 @@
+# HotPotQA + common pipeline: TPE search with ALL modules ENABLED
+#
+# This config forces rewriter/reranker/pruner to be enabled in base,
+# so you can always see their detailed logs during TPE search.
+# Other hyperparameters (models, prompts, topk, etc.) are still searchable.
+
+base:
+  pipeline: common
+  # Generator: must match the model name/path exposed by your OpenAI-compatible endpoint.
+  generator_model: "/home/xwh/models/Qwen3-4B-Instruct-2507"
+  generator_max_tokens: 32768
+  
+  # Force all modules to be enabled (so you can see their logs)
+  rewriter_enabled: true
+  reranker_enabled: true
+  pruner_enabled: true
+
+space:
+  # IMPORTANT (no-download / demo-friendly):
+  # If your machine cannot reliably reach huggingface.co, TPE may sample models that trigger downloads
+  # (e.g. intfloat/e5-large-v2, cross-encoders). Pin them to a known-available model to avoid timeouts.
+  embedder_model: ["BAAI/bge-m3"]
+  
+  # Unified retrieval knob: 0=cosine, 1=bm25, (0,1)=hybrid
+  bm25_weight:
+    low: 0.0
+    high: 1.0
+    steps: 6
+  retriever_topk: [3, 5, 10]
+
+  # Chunking
+  chunking_enabled: [false, true]
+  chunk_size: [256, 512]
+
+  # Query rewrite (enabled in base, but prompt/model can vary)
+  rewriter_prompt_id: ["rewrite_v1", "rewrite_v2_keywords"]
+
+  # Rerank (enabled in base, but model/topk can vary)
+  reranker_model: ["none", "cross-encoder/ms-marco-MiniLM-L-6-v2"]
+  rerank_topk: [3, 5, 10]
+
+  # Prune (enabled in base; model is fixed to qwen3 by default)

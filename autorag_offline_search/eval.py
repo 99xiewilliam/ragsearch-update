@@ -166,6 +166,26 @@ def evaluate_config(
             }
             head = f"[TRACE] split={split_name or '?'} trial={debug_trial or 0} ex={ex_idx} qid={ex.qid}"
             _log(config, head)
+            # Print high-signal config knobs so it's obvious which modules are enabled in this trial.
+            cfg_dbg = {
+                "pipeline": _cfg_str(config, "pipeline", ""),
+                "bm25_weight": config.get("bm25_weight", None),
+                "retriever": _cfg_str(config, "retriever", ""),
+                "retriever_topk": _cfg_int(config, "retriever_topk", 0),
+                "chunking_enabled": bool(config.get("chunking_enabled", False)),
+                "chunk_size": _cfg_int(config, "chunk_size", 0),
+                "embedding_enabled": bool(config.get("embedding_enabled", False)),
+                "embedder_model": _cfg_str(config, "embedder_model", ""),
+                "rewriter_enabled": bool(config.get("rewriter_enabled", False)),
+                "rewriter_model": _cfg_str(config, "rewriter_model", ""),
+                "reranker_enabled": bool(config.get("reranker_enabled", False)),
+                "reranker_model": _cfg_str(config, "reranker_model", ""),
+                "rerank_topk": _cfg_int(config, "rerank_topk", 0),
+                "pruner_enabled": bool(config.get("pruner_enabled", False)),
+                "pruner_model": _cfg_str(config, "pruner_model", ""),
+                "generator_model": _cfg_str(config, "generator_model", ""),
+            }
+            _log(config, f"[TRACE] cfg={cfg_dbg}")
             _log(config, f"[TRACE] query={_short(ex.query, debug_max_chars)}")
             _log(config, f"[TRACE] gold={_short(str(refs), debug_max_chars)}")
             _log(config, f"[TRACE] pred={_short(pred, debug_max_chars)}")

@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
-from ..modules.chunking import ChunkingConfig, chunk_docs
+from ..modules.chunking import ChunkingConfig
 from ..modules.embedding import embed_query, embed_texts
 from ..modules.generator_fixed import GeneratorConfig, generate_answer
 from ..modules.logging_utils import log, log_kv
@@ -244,16 +244,29 @@ class CommonRagPipeline:
         docs = [self._chunk_texts[i] for i in idx]
         if self.cfg.reranker_enabled:
             log(self.cfg, f"[COMMON:reranker] enabled model={self.cfg.reranker_model} topk={self.cfg.rerank_topk}")
-            ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
+            # Check if using Qwen3-VL-Reranker (multimodal model)
+            if "Qwen3-VL-Reranker" in str(self.cfg.reranker_model) or "/Qwen3-VL-Reranker" in str(self.cfg.reranker_model):
+                from ..modules.multimodal_reranking import rerank_multimodal
+                # For common pipeline, we only have text (no images), so pass empty image lists
+                ridx = rerank_multimodal(
+                    model_name=self.cfg.reranker_model,
+                    query=q,
+                    doc_texts=docs,
+                    doc_images=[[] for _ in docs],  # Empty images for text-only pipeline
+                    topk=self.cfg.rerank_topk,
+                )
+            else:
+                ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
             final = [docs[i] for i in ridx]
             log(self.cfg, f"[COMMON:reranker] reranked_indices={ridx[:10]} (n={len(ridx)})")
         else:
             log(self.cfg, "[COMMON:reranker] disabled")
             final = docs
 
-        log(self.cfg, f"[COMMON:pruner] enabled={self.cfg.pruner_enabled} model={self.cfg.pruner_model} max_tokens={self.cfg.pruner_max_tokens}")
+        log(self.cfg, f"[COMMON:pruner] enabled={self.cfg.pruner_enabled} model={self.cfg.pruner_model} mode={self.cfg.pruner_mode} max_tokens={self.cfg.pruner_max_tokens}")
         if self.cfg.pruner_enabled:
             log_kv(self.cfg, prefix="[COMMON:pruner] ", key="prompt", value=self.cfg.pruner_prompt, limit=240)
+            log(self.cfg, f"[COMMON:pruner] input_chunks={len(final)}")
         final = prune_chunks(
             query=q,
             chunks=final,
@@ -262,11 +275,17 @@ class CommonRagPipeline:
                 model=self.cfg.pruner_model,
                 prompt=self.cfg.pruner_prompt,
                 max_tokens=self.cfg.pruner_max_tokens,
+                mode=self.cfg.pruner_mode,
             ),
             llm_base_url=self.cfg.llm_base_url,
             model_resolver=resolve_model,
         )
         log(self.cfg, f"[COMMON:pruner] final_chunks={len(final)}")
+        if final:
+            preview = "\n\n---\n\n".join(final[:3])  # Show first 3 chunks
+            if len(final) > 3:
+                preview += f"\n\n... (and {len(final) - 3} more chunks)"
+            log_kv(self.cfg, prefix="[COMMON:pruner] ", key="pruned_content", value=preview, limit=400)
 
         ctx = "\n\n---\n\n".join(final)
         log(self.cfg, f"[COMMON:generator] model={self.cfg.generator_model} max_tokens={self.cfg.generator_max_tokens}")
@@ -316,7 +335,19 @@ class CommonRagPipeline:
             out["retrieved"] = [{"i": int(i), "text": self._chunk_texts[i]} for i in idx[: min(10, len(idx))]]
 
             if self.cfg.reranker_enabled:
-                ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
+                # Check if using Qwen3-VL-Reranker (multimodal model)
+                if "Qwen3-VL-Reranker" in str(self.cfg.reranker_model) or "/Qwen3-VL-Reranker" in str(self.cfg.reranker_model):
+                    from ..modules.multimodal_reranking import rerank_multimodal
+                    # For common pipeline, we only have text (no images), so pass empty image lists
+                    ridx = rerank_multimodal(
+                        model_name=self.cfg.reranker_model,
+                        query=q,
+                        doc_texts=docs,
+                        doc_images=[[] for _ in docs],  # Empty images for text-only pipeline
+                        topk=self.cfg.rerank_topk,
+                    )
+                else:
+                    ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
                 final = [docs[i] for i in ridx]
                 out["reranked_indices"] = ridx
             else:

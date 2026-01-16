@@ -4,7 +4,7 @@ import re
 import os
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence
 
 from transformers import AutoTokenizer
 

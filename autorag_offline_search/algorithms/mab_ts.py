@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import List
 
 from .base import SearchInput, SearchOutput, Trial, best_trial, evaluate
 
