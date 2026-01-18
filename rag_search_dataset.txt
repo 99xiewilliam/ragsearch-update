@@ -1,6 +1,6 @@
 Normal Rag
 
-https://huggingface.co/datasets/rag-datasets/rag-mini-wikipedia  miniwiki数据集，918条qa，3200条corpus，使用accuracy和faithfulness（LLMAAJ）
+https://huggingface.co/datasets/rag-datasets/rag-mini-wikipedia  miniwiki数据集，918条qa，3200条corpus（HF configs: text-corpus/passages + question-answer/test）。可先抽样 30 条跑通：scripts/demo_run_miniwiki_common_30.sh（生成 datasets/rag_mini_wikipedia_30）
        
 https://huggingface.co/datasets/PatronusAI/financebench   financebench数据集，150条qa+corpus，使用exact match （LLMAAJ）
 

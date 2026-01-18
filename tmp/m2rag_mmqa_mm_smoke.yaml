@@ -1,0 +1,16 @@
+pipeline: multimodal
+
+# Pure BM25 over pos_text/caption for stable smoke (no embeddings download).
+bm25_weight: 1.0
+retriever_topk: 3
+chunking_enabled: false
+reranker_enabled: false
+pruner_enabled: false
+rewriter_enabled: false
+
+# Use a vision-capable generator (served by your vLLM endpoint).
+generator_model: "/home/xwh/models/Qwen3-VL-4B-Instruct"
+generator_max_tokens: 256
+
+# Make sure multimodal pipeline augments text with metadata (caption/ocr/etc.)
+multimodal_metadata_enabled: true

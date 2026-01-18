@@ -12,11 +12,13 @@ PY="conda run -n ragsearch --no-capture-output python"
 
 DATASET_DIR="${ROOT}/datasets/hotpotqa_distractor_20"
 OUT_DIR="${ROOT}/runs/hotpotqa_common_20_smoke"
+LOG_FILE="${LOG_FILE:-${OUT_DIR}/run.log}"
 CFG="${ROOT}/tmp/hotpotqa_common_smoke.yaml"
 
 LLM_BASE_URL="${LLM_BASE_URL:-http://localhost:9000/v1}"
+DEBUG_TRACE_N="${DEBUG_TRACE_N:-0}"
 
-mkdir -p "${ROOT}/datasets" "${ROOT}/runs"
+mkdir -p "${ROOT}/datasets" "${ROOT}/runs" "${OUT_DIR}"
 
 echo "[1/2] Build HotPotQA sample dataset -> ${DATASET_DIR}"
 ${PY} "${ROOT}/scripts/datasets/make_hotpotqa_sample_dataset.py" \
@@ -29,6 +31,7 @@ ${PY} "${ROOT}/scripts/datasets/make_hotpotqa_sample_dataset.py" \
 
 echo
 echo "[2/2] Run common pipeline (BM25-only) -> ${OUT_DIR}"
+echo "  log -> ${LOG_FILE}"
 conda run -n ragsearch --no-capture-output env PYTHONPATH="${ROOT}" \
   python -m autorag_offline_search.cli \
     --dataset_dir "${DATASET_DIR}" \
@@ -39,8 +42,12 @@ conda run -n ragsearch --no-capture-output env PYTHONPATH="${ROOT}" \
     --llm_base_url "${LLM_BASE_URL}" \
     --pipeline common \
     --config "${CFG}" \
+    --verbose \
+    --module_logs \
+    --debug_trace_n "${DEBUG_TRACE_N}" \
     --dump_val_generations \
-    --dump_val_limit 20
+    --dump_val_limit 20 \
+  2>&1 | tee "${LOG_FILE}"
 
 echo
 echo "[DONE] See outputs under: ${OUT_DIR}"
