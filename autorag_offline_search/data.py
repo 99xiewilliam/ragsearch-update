@@ -6,6 +6,7 @@ from typing import List, Tuple
 import pandas as pd
 import json
 import numpy as np
+import os
 
 from .types import Doc, QAExample
 
@@ -77,12 +78,58 @@ def _to_list_str(x) -> List[str]:
 
 def load_split(dataset_dir: str, split: str) -> Tuple[List[Doc], List[QAExample]]:
     """
-    Load corpus + qa from:
-      {dataset_dir}/{split}/corpus.parquet
-      {dataset_dir}/{split}/qa.parquet
+    Load corpus + qa.
+
+    Supported dataset layouts:
+
+    1) Split layout (recommended):
+       {dataset_dir}/{split}/corpus.parquet
+       {dataset_dir}/{split}/qa.parquet
+
+    2) Single-file layout (no train/validation folders):
+       {dataset_dir}/corpus.parquet
+       {dataset_dir}/qa.parquet
+
+    Notes:
+    - The CLI/experiment code will still call load_split(dataset_dir,"train") and
+      load_split(dataset_dir,"validation"). Under single-file layout, both calls
+      will load the same files.
     """
-    corpus_path = f"{dataset_dir}/{split}/corpus.parquet"
-    qa_path = f"{dataset_dir}/{split}/qa.parquet"
+    # Prefer split layout if present; otherwise fall back to single-file layout.
+    cand_split_corpus = os.path.join(dataset_dir, split, "corpus.parquet")
+    cand_split_qa = os.path.join(dataset_dir, split, "qa.parquet")
+
+    cand_root_corpus = os.path.join(dataset_dir, "corpus.parquet")
+    cand_root_qa = os.path.join(dataset_dir, "qa.parquet")
+
+    corpus_path: str
+    qa_path: str
+
+    if os.path.exists(cand_split_corpus) and os.path.exists(cand_split_qa):
+        corpus_path, qa_path = cand_split_corpus, cand_split_qa
+    elif os.path.exists(cand_root_corpus) and os.path.exists(cand_root_qa):
+        corpus_path, qa_path = cand_root_corpus, cand_root_qa
+    else:
+        # Backward/partial compatibility: if only one split exists, reuse it.
+        reused = None
+        for alt in ("train", "validation"):
+            c = os.path.join(dataset_dir, alt, "corpus.parquet")
+            q = os.path.join(dataset_dir, alt, "qa.parquet")
+            if os.path.exists(c) and os.path.exists(q):
+                reused = (c, q, alt)
+                break
+        if reused is not None:
+            corpus_path, qa_path, alt = reused
+        else:
+            raise FileNotFoundError(
+                "Could not find dataset parquet files. Tried:\n"
+                f"- {cand_split_corpus}\n"
+                f"- {cand_split_qa}\n"
+                f"- {cand_root_corpus}\n"
+                f"- {cand_root_qa}\n"
+                f"- {os.path.join(dataset_dir, 'train', 'corpus.parquet')} (+ qa.parquet)\n"
+                f"- {os.path.join(dataset_dir, 'validation', 'corpus.parquet')} (+ qa.parquet)\n"
+            )
 
     corpus_df = pd.read_parquet(corpus_path)
     qa_df = pd.read_parquet(qa_path)

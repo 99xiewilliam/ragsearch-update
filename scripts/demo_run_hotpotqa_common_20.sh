@@ -23,6 +23,7 @@ mkdir -p "${ROOT}/datasets" "${ROOT}/runs" "${OUT_DIR}"
 echo "[1/2] Build HotPotQA sample dataset -> ${DATASET_DIR}"
 ${PY} "${ROOT}/scripts/datasets/make_hotpotqa_sample_dataset.py" \
   --out_dir "${DATASET_DIR}" \
+  --no_split \
   --subset distractor \
   --split validation \
   --n_train 20 \

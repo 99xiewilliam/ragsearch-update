@@ -7,6 +7,11 @@ This repo uses a simple on-disk dataset format:
 - `<dataset_dir>/validation/corpus.parquet`
 - `<dataset_dir>/validation/qa.parquet`
 
+Alternative (supported) single-file format (no train/validation folders):
+
+- `<dataset_dir>/corpus.parquet`
+- `<dataset_dir>/qa.parquet`
+
 Optional (GraphRAG):
 
   - each line: `{"src":"<doc_id>","dst":"<doc_id>"}` (recommended)

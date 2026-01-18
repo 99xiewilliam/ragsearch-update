@@ -41,6 +41,7 @@ def run_one_algorithm(
     rag_factory: RagFactory,
     train_trials: int,
     seed: int,
+    no_validation: bool = False,
     grpo_group_size: int = 0,
     tpe_patience: int = 0,
     tpe_min_delta: float = 0.0,
@@ -326,30 +327,81 @@ def run_one_algorithm(
     # result schema (always None).
     best_global: Optional[Trial] = None
 
-    # validate once with best config
-    val_res, val_stats = evaluate_config(
-        docs_val,
-        qas_val,
-        best.config,
-        metrics_cfg=metrics_cfg,
-        rag_factory=rag_factory,
-        show_progress=show_eval_progress,
-        split_name="validation",
-        dump_predictions_path=dump_val_predictions_path,
-        dump_item_prefix={
-            "split": "validation",
-            "algo": algo_name,
+    val_global = None
+    # In "no_split" datasets, we do not have an independent validation split.
+    # By default, we do NOT run a second evaluation pass. (The best_train trial already
+    # contains metrics/reward computed on the single dataset.)
+    #
+    # However, if user requests dumping per-example generations, we must run an eval pass
+    # once to produce those artifacts.
+    if bool(no_validation):
+        if dump_val_predictions_path:
+            val_res, val_stats = evaluate_config(
+                docs_train,
+                qas_train,
+                best.config,
+                metrics_cfg=metrics_cfg,
+                rag_factory=rag_factory,
+                show_progress=show_eval_progress,
+                split_name="eval",
+                dump_predictions_path=dump_val_predictions_path,
+                dump_item_prefix={
+                    "split": "eval",
+                    "algo": algo_name,
+                    "config_str": config_to_str(best.config),
+                    "note": "no_validation",
+                },
+                dump_limit=int(dump_val_limit) if dump_val_limit else 0,
+            )
+            validation_block = {
+                "reward": val_res.weighted_reward,
+                "seconds": val_stats.seconds,
+                "metrics": val_res.per_metric,
+                "config": best.config,
+                "config_str": config_to_str(best.config),
+                "note": "no_validation",
+            }
+        else:
+            # Reuse the best_train trial statistics (single evaluation setting).
+            validation_block = {
+                "reward": best.reward,
+                "seconds": best.seconds,
+                "metrics": best.metrics,
+                "config": best.config,
+                "config_str": config_to_str(best.config),
+                "note": "no_validation",
+            }
+    else:
+        # validate once with best config
+        val_res, val_stats = evaluate_config(
+            docs_val,
+            qas_val,
+            best.config,
+            metrics_cfg=metrics_cfg,
+            rag_factory=rag_factory,
+            show_progress=show_eval_progress,
+            split_name="validation",
+            dump_predictions_path=dump_val_predictions_path,
+            dump_item_prefix={
+                "split": "validation",
+                "algo": algo_name,
+                "config_str": config_to_str(best.config),
+            }
+            if dump_val_predictions_path
+            else None,
+            dump_limit=int(dump_val_limit) if dump_val_limit else 0,
+        )
+        validation_block = {
+            "reward": val_res.weighted_reward,
+            "seconds": val_stats.seconds,
+            "metrics": val_res.per_metric,
+            "config": best.config,
             "config_str": config_to_str(best.config),
         }
-        if dump_val_predictions_path
-        else None,
-        dump_limit=int(dump_val_limit) if dump_val_limit else 0,
-    )
-
-    val_global = None
 
     return {
         "algo": algo_name,
+        "no_validation": bool(no_validation),
         "train_trials": [
             {
                 "reward": t.reward,
@@ -379,13 +431,7 @@ def run_one_algorithm(
             if best_global is not None
             else None
         ),
-        "validation": {
-            "reward": val_res.weighted_reward,
-            "seconds": val_stats.seconds,
-            "metrics": val_res.per_metric,
-            "config": best.config,
-            "config_str": config_to_str(best.config),
-        },
+        "validation": validation_block,
         "validation_global": val_global,
     }
 
@@ -424,8 +470,28 @@ def run_dataset(
 ) -> Dict:
     os.makedirs(out_dir, exist_ok=True)
 
+    # Dataset layout detection:
+    # - split layout: dataset_dir/train/* + dataset_dir/validation/*
+    # - no_split layout: dataset_dir/{corpus,qa}.parquet only
+    #
+    # In no_split layout, we do not run a separate validation pass.
+    has_root_files = os.path.exists(os.path.join(dataset_dir, "corpus.parquet")) and os.path.exists(
+        os.path.join(dataset_dir, "qa.parquet")
+    )
+    has_train_split = os.path.exists(os.path.join(dataset_dir, "train", "corpus.parquet")) and os.path.exists(
+        os.path.join(dataset_dir, "train", "qa.parquet")
+    )
+    has_val_split = os.path.exists(os.path.join(dataset_dir, "validation", "corpus.parquet")) and os.path.exists(
+        os.path.join(dataset_dir, "validation", "qa.parquet")
+    )
+    no_validation = bool(has_root_files and (not has_val_split))
+
+    # Always load once (load_split will fall back to root files when split files don't exist).
     docs_train, qas_train = load_split(dataset_dir, "train")
-    docs_val, qas_val = load_split(dataset_dir, "validation")
+    if no_validation:
+        docs_val, qas_val = docs_train, qas_train
+    else:
+        docs_val, qas_val = load_split(dataset_dir, "validation")
 
     # Load plugins (optional). If not provided, use built-ins.
     rag_factory: RagFactory
@@ -580,6 +646,7 @@ def run_dataset(
             "rag_factory": rag_factory,
             "train_trials": train_trials,
             "seed": seed,
+            "no_validation": bool(no_validation),
             "grpo_group_size": grpo_group_size,
             "config_base": fixed_base,
             "config_inject": inject,
@@ -609,6 +676,7 @@ def run_dataset(
                     "rag_factory": rag_factory,
                     "train_trials": train_trials,
                     "seed": seed,
+                    "no_validation": bool(no_validation),
                     "grpo_group_size": grpo_group_size,
                     "tpe_patience": tpe_patience,
                     "tpe_min_delta": tpe_min_delta,
@@ -646,6 +714,7 @@ def run_dataset(
                 rag_factory=rag_factory,
                 train_trials=train_trials,
                 seed=seed,
+                no_validation=bool(no_validation),
                 grpo_group_size=grpo_group_size,
                 tpe_patience=tpe_patience,
                 tpe_min_delta=tpe_min_delta,
@@ -667,6 +736,7 @@ def run_dataset(
         "dataset_dir": dataset_dir,
         "algos": list(algos),
         "train_trials_budget": train_trials,
+        "no_validation": bool(no_validation),
         "metrics_weights": metrics_cfg.weights,
         "bertscore_model": metrics_cfg.bertscore_model,
         "rag_plugin": rag_plugin or "autorag_offline_search.plugins.rag:UnifiedRag",
@@ -697,7 +767,7 @@ def run_dataset(
         bg_reward = float(bg["reward"]) if isinstance(bg, dict) else 0.0
         # NOTE: we report +delta when best beats global baseline.
         best_minus_global = float(bt - bg_reward) if bg is not None else 0.0
-        v = r["validation"]
+        v = r.get("validation") or r["best_train"]
         vg = r.get("validation_global") or None
         vg_reward = float(vg["reward"]) if isinstance(vg, dict) else 0.0
         val_minus_global = float(v["reward"] - vg_reward) if vg is not None else 0.0

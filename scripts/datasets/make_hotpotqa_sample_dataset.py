@@ -15,7 +15,12 @@ def _parse_args() -> argparse.Namespace:
         "--out_dir",
         type=str,
         required=True,
-        help="Output dataset directory (will create train/validation splits).",
+        help="Output dataset directory.",
+    )
+    p.add_argument(
+        "--no_split",
+        action="store_true",
+        help="If set, write a single-file dataset (corpus.parquet + qa.parquet) under out_dir, without train/validation folders.",
     )
     p.add_argument(
         "--subset",
@@ -106,6 +111,12 @@ def _write_split(out_dir: str, split: str, *, docs: List[Dict[str, Any]], qas: L
     pd.DataFrame(qas).to_parquet(os.path.join(d, "qa.parquet"), index=False)
 
 
+def _write_no_split(out_dir: str, *, docs: List[Dict[str, Any]], qas: List[Dict[str, Any]]) -> None:
+    os.makedirs(out_dir, exist_ok=True)
+    pd.DataFrame(docs).to_parquet(os.path.join(out_dir, "corpus.parquet"), index=False)
+    pd.DataFrame(qas).to_parquet(os.path.join(out_dir, "qa.parquet"), index=False)
+
+
 def main() -> None:
     args = _parse_args()
     out_dir = str(args.out_dir)
@@ -130,6 +141,32 @@ def main() -> None:
     docs = _iter_docs_from_examples(union_ex)
     qas_train = _iter_qas_from_examples(train_ex)
     qas_val = _iter_qas_from_examples(val_ex)
+
+    if bool(args.no_split):
+        # One QA file only. If n_val==0, it's the same as train_qas; otherwise use union(train,val).
+        if n_val > 0:
+            qas_one = _iter_qas_from_examples(list(train_ex) + list(val_ex))
+            # de-dup by qid while preserving order
+            seen = set()
+            qas_one_uniq = []
+            for item in qas_one:
+                qid = str(item.get("qid", "")).strip()
+                if qid and qid in seen:
+                    continue
+                if qid:
+                    seen.add(qid)
+                qas_one_uniq.append(item)
+            qas_one = qas_one_uniq
+        else:
+            qas_one = qas_train
+
+        _write_no_split(out_dir, docs=docs, qas=qas_one)
+        print(
+            f"[OK] wrote dataset (no_split): {out_dir}\n"
+            f"  corpus_docs={len(docs)}\n"
+            f"  qas={len(qas_one)}"
+        )
+        return
 
     _write_split(out_dir, "train", docs=docs, qas=qas_train)
     _write_split(out_dir, "validation", docs=docs, qas=qas_val)
