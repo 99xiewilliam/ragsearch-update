@@ -10,12 +10,16 @@ import numpy as np
 
 from ..modules.chunking import ChunkingConfig
 from ..modules.embedding import embed_query, embed_texts
-from ..modules.generator_fixed import GeneratorConfig, generate_answer
+from ..modules.generator_fixed import (
+    GeneratorConfig,
+    generate_answer,
+    generate_answer_async,
+)
 from ..modules.logging_utils import log, log_kv
-from ..modules.pruner import PrunerConfig, prune_chunks
+from ..modules.pruner import PrunerConfig, prune_chunks, prune_chunks_async
 from ..modules.retrieval import BM25Index, RetrievalConfig, retrieve_indices
 from ..modules.reranking import rerank
-from ..modules.rewriter import RewriterConfig, rewrite_query
+from ..modules.rewriter import RewriterConfig, rewrite_query, rewrite_query_async
 from ..modules.vector_index import VectorIndex, build_vector_index
 from ..types import Doc
 from .config import NormalizedConfig, normalize_config, resolve_model
@@ -373,6 +377,171 @@ class CommonRagPipeline:
                 context=ctx,
                 cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
                 llm_base_url=self.cfg.llm_base_url,
+            )
+            out["answer"] = ans
+        except Exception as e:
+            out["error"] = repr(e)
+            out.setdefault("answer", "")
+        return out
+
+    async def answer_async(self, query: str, *, llm_sems: Dict[str, object] | None = None) -> str:
+        """
+        Async version of answer() that uses AsyncOpenAI and supports per-module concurrency limiting.
+
+        llm_sems keys (optional):
+          - "rewriter": asyncio.Semaphore
+          - "pruner"  : asyncio.Semaphore
+          - "generator": asyncio.Semaphore
+        """
+        q0 = str(query or "")
+        q = await rewrite_query_async(
+            query=q0,
+            cfg=RewriterConfig(
+                enabled=self.cfg.rewriter_enabled,
+                model=self.cfg.rewriter_model,
+                prompt=self.cfg.rewriter_prompt,
+                max_tokens=self.cfg.rewriter_max_tokens,
+            ),
+            llm_base_url=self.cfg.llm_base_url,
+            model_resolver=resolve_model,
+            semaphore=(llm_sems or {}).get("rewriter"),
+        )
+
+        q_emb = None
+        if self._vector_index is not None:
+            q_emb = embed_query(self.cfg.embedder_model, q).astype(np.float32)
+
+        idx = retrieve_indices(
+            cfg=RetrievalConfig(method=self.cfg.retriever, topk=self.cfg.retriever_topk, hybrid_alpha=self.cfg.hybrid_alpha),
+            query=q,
+            vector_index=self._vector_index,
+            query_emb=q_emb,
+            bm25=self._bm25,
+        )
+        if not idx:
+            return ""
+
+        docs = [self._chunk_texts[i] for i in idx]
+        if self.cfg.reranker_enabled:
+            # Keep reranker sync (HF models); bottleneck is usually LLM calls.
+            if "Qwen3-VL-Reranker" in str(self.cfg.reranker_model) or "/Qwen3-VL-Reranker" in str(self.cfg.reranker_model):
+                from ..modules.multimodal_reranking import rerank_multimodal
+
+                ridx = rerank_multimodal(
+                    model_name=self.cfg.reranker_model,
+                    query=q,
+                    doc_texts=docs,
+                    doc_images=[[] for _ in docs],
+                    topk=self.cfg.rerank_topk,
+                )
+            else:
+                ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
+            final = [docs[i] for i in ridx]
+        else:
+            final = docs
+
+        final = await prune_chunks_async(
+            query=q,
+            chunks=final,
+            cfg=PrunerConfig(
+                enabled=self.cfg.pruner_enabled,
+                model=self.cfg.pruner_model,
+                prompt=self.cfg.pruner_prompt,
+                max_tokens=self.cfg.pruner_max_tokens,
+                mode=self.cfg.pruner_mode,
+            ),
+            llm_base_url=self.cfg.llm_base_url,
+            model_resolver=resolve_model,
+            semaphore=(llm_sems or {}).get("pruner"),
+        )
+
+        ctx = "\n\n---\n\n".join(final)
+        gen = await generate_answer_async(
+            query=q0,
+            context=ctx,
+            cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
+            llm_base_url=self.cfg.llm_base_url,
+            semaphore=(llm_sems or {}).get("generator"),
+        )
+        return gen
+
+    async def answer_with_trace_async(self, query: str, *, llm_sems: Dict[str, object] | None = None) -> Dict:
+        """
+        Async version of answer_with_trace().
+        """
+        out: Dict = {"query": query, "pipeline": "common"}
+        try:
+            q0 = str(query or "")
+            q = await rewrite_query_async(
+                query=q0,
+                cfg=RewriterConfig(
+                    enabled=self.cfg.rewriter_enabled,
+                    model=self.cfg.rewriter_model,
+                    prompt=self.cfg.rewriter_prompt,
+                    max_tokens=self.cfg.rewriter_max_tokens,
+                ),
+                llm_base_url=self.cfg.llm_base_url,
+                model_resolver=resolve_model,
+                semaphore=(llm_sems or {}).get("rewriter"),
+            )
+            out["rewritten_query"] = q
+
+            q_emb = None
+            if self._vector_index is not None:
+                q_emb = embed_query(self.cfg.embedder_model, q).astype(np.float32)
+
+            idx = retrieve_indices(
+                cfg=RetrievalConfig(method=self.cfg.retriever, topk=self.cfg.retriever_topk, hybrid_alpha=self.cfg.hybrid_alpha),
+                query=q,
+                vector_index=self._vector_index,
+                query_emb=q_emb,
+                bm25=self._bm25,
+            )
+            out["retrieved_indices"] = idx
+            out["retrieved"] = [{"i": int(i), "text": self._chunk_texts[i]} for i in idx[: min(10, len(idx))]]
+            docs = [self._chunk_texts[i] for i in idx]
+
+            if self.cfg.reranker_enabled:
+                if "Qwen3-VL-Reranker" in str(self.cfg.reranker_model) or "/Qwen3-VL-Reranker" in str(self.cfg.reranker_model):
+                    from ..modules.multimodal_reranking import rerank_multimodal
+
+                    ridx = rerank_multimodal(
+                        model_name=self.cfg.reranker_model,
+                        query=q,
+                        doc_texts=docs,
+                        doc_images=[[] for _ in docs],
+                        topk=self.cfg.rerank_topk,
+                    )
+                else:
+                    ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
+                final = [docs[i] for i in ridx]
+                out["reranked_indices"] = ridx
+            else:
+                final = docs
+                out["reranked_indices"] = []
+
+            pruned = await prune_chunks_async(
+                query=q,
+                chunks=final,
+                cfg=PrunerConfig(
+                    enabled=self.cfg.pruner_enabled,
+                    model=self.cfg.pruner_model,
+                    prompt=self.cfg.pruner_prompt,
+                    max_tokens=self.cfg.pruner_max_tokens,
+                    mode=self.cfg.pruner_mode,
+                ),
+                llm_base_url=self.cfg.llm_base_url,
+                model_resolver=resolve_model,
+                semaphore=(llm_sems or {}).get("pruner"),
+            )
+            out["final_chunks"] = pruned[: min(10, len(pruned))]
+            ctx = "\n\n---\n\n".join(pruned)
+            ans = await generate_answer_async(
+                query=q0,
+                context=ctx,
+                cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
+                llm_base_url=self.cfg.llm_base_url,
+                semaphore=(llm_sems or {}).get("generator"),
             )
             out["answer"] = ans
         except Exception as e:

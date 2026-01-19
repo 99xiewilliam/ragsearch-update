@@ -123,36 +123,6 @@ def _parse_args() -> argparse.Namespace:
         default="",
         help="Base URL for OpenAI-compatible endpoint (vLLM), e.g. http://localhost:9000/v1",
     )
-    p.add_argument(
-        "--embedder_model",
-        type=str,
-        default="",
-        help="Optional override for embedder_model (e.g. BAAI/bge-m3). If set, overrides space/config.",
-    )
-    p.add_argument(
-        "--pipeline",
-        type=str,
-        default="",
-        help="Pipeline category: common|multimodal. If set, overrides space/config.",
-    )
-    p.add_argument(
-        "--generator_model",
-        type=str,
-        default="",
-        help="Generator LLM model id/path/name (prompt is fixed). If set, overrides space/config.",
-    )
-    p.add_argument(
-        "--generator_max_tokens",
-        type=int,
-        default=0,
-        help="Generator max tokens (prompt is fixed). If set (>0), overrides space/config.",
-    )
-    p.add_argument(
-        "--bm25_weight",
-        type=float,
-        default=-1.0,
-        help="Unified retrieval knob in [0,1]: 0=cosine, 1=bm25, (0,1)=hybrid. If set (>=0), overrides space/config.",
-    )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
         "--module_logs",
@@ -174,6 +144,29 @@ def _parse_args() -> argparse.Namespace:
         "--show_eval_progress",
         action="store_true",
         help="Show tqdm progress bar inside each evaluation (very noisy/slow for many trials).",
+    )
+    p.add_argument(
+        "--show_trial_progress",
+        action="store_true",
+        help="Show a tqdm progress bar for trial-level objective evaluations (per algorithm).",
+    )
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from checkpoints under <out_dir>/.checkpoints and skip already evaluated configs.",
+    )
+    p.add_argument(
+        "--checkpoint_every",
+        type=int,
+        default=1,
+        help="When --resume, flush checkpoint every N completed trials (default 1).",
+    )
+    p.add_argument(
+        "--request_parallelism",
+        type=str,
+        default="auto",
+        choices=["auto", "on", "off"],
+        help="Request-level parallelism mode for LLM calls during evaluation: auto=enable only when *_max_inflight>0 (current behavior), on=force async request-parallel eval, off=force sync eval.",
     )
     p.add_argument(
         "--dump_val_generations",
@@ -223,15 +216,14 @@ def main() -> None:
             space_plugin=args.space_plugin,
             cache_dir=args.cache_dir,
             llm_base_url=args.llm_base_url,
-            embedder_model=args.embedder_model,
-            pipeline=args.pipeline,
-            generator_model=args.generator_model,
-            generator_max_tokens=args.generator_max_tokens,
-            bm25_weight=args.bm25_weight,
             config_base=base_cfg,
             verbose=args.verbose,
             log_every=args.log_every,
             show_eval_progress=args.show_eval_progress,
+            show_trial_progress=bool(args.show_trial_progress),
+            resume=bool(args.resume),
+            checkpoint_every=int(args.checkpoint_every) if args.checkpoint_every else 1,
+            request_parallelism=str(args.request_parallelism),
             dump_val_generations=bool(args.dump_val_generations),
             dump_val_limit=int(args.dump_val_limit) if args.dump_val_limit else 0,
         )
@@ -263,15 +255,14 @@ def main() -> None:
             space_plugin=args.space_plugin,
             cache_dir=args.cache_dir,
             llm_base_url=args.llm_base_url,
-            embedder_model=args.embedder_model,
-            pipeline=args.pipeline,
-            generator_model=args.generator_model,
-            generator_max_tokens=args.generator_max_tokens,
-            bm25_weight=args.bm25_weight,
             config_base=base_cfg,
             verbose=args.verbose,
             log_every=args.log_every,
             show_eval_progress=args.show_eval_progress,
+            show_trial_progress=bool(args.show_trial_progress),
+            resume=bool(args.resume),
+            checkpoint_every=int(args.checkpoint_every) if args.checkpoint_every else 1,
+            request_parallelism=str(args.request_parallelism),
             dump_val_generations=bool(args.dump_val_generations),
             dump_val_limit=int(args.dump_val_limit) if args.dump_val_limit else 0,
         )

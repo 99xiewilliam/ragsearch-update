@@ -30,3 +30,14 @@ class UnifiedRag:
             return self._pipe.answer_with_trace(query)  # type: ignore[no-any-return]
         return {"query": query, "answer": self.answer(query)}
 
+    async def answer_async(self, query: str, *, llm_sems: Dict[str, object] | None = None) -> str:
+        if hasattr(self._pipe, "answer_async"):
+            return await self._pipe.answer_async(query, llm_sems=llm_sems)  # type: ignore[no-any-return]
+        # fallback to sync
+        return self.answer(query)
+
+    async def answer_with_trace_async(self, query: str, *, llm_sems: Dict[str, object] | None = None) -> Dict:
+        if hasattr(self._pipe, "answer_with_trace_async"):
+            return await self._pipe.answer_with_trace_async(query, llm_sems=llm_sems)  # type: ignore[no-any-return]
+        return self.answer_with_trace(query)
+

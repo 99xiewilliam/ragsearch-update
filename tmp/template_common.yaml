@@ -1,0 +1,30 @@
+base:
+  # 1. 环境与基础
+  pipeline: common
+  llm_base_url: "http://localhost:9001/v1"
+  generator_model: "/home/xwh/models/Qwen3-4B-Instruct-2507"
+  generator_max_tokens: 128
+  module_logs: true
+
+  # 2. 并发设置
+  rewriter_max_inflight: 16
+  pruner_max_inflight: 16
+  generator_max_inflight: 4
+
+space:
+  # 3. 核心逻辑开关
+  rewriter_enabled: [false, true]
+  rewriter_prompt_id: ["rewrite_v1", "rewrite_v2_keywords"]
+  
+  chunking_enabled: [false, true]
+  chunk_size: [256, 512]
+  
+  embedder_model: ["BAAI/bge-m3", "intfloat/e5-large-v2"]
+  retriever_topk: [3, 5, 10]
+  bm25_weight: [0.0, 0.5, 1.0]
+  
+  reranker_enabled: [false, true]
+  reranker_model: ["none", "cross-encoder/ms-marco-MiniLM-L-6-v2"]
+  rerank_topk: [3, 5, 10]
+  
+  pruner_enabled: [true]

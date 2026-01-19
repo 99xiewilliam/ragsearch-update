@@ -15,7 +15,12 @@ def _parse_args() -> argparse.Namespace:
         "--out_dir",
         type=str,
         required=True,
-        help="Output dataset directory (will create train/validation splits).",
+        help="Output dataset directory.",
+    )
+    p.add_argument(
+        "--no_split",
+        action="store_true",
+        help="If set, write a single-file dataset (corpus.parquet + qa.parquet) under out_dir, without train/validation folders.",
     )
     p.add_argument(
         "--n_train",
@@ -68,6 +73,12 @@ def _write_split(out_dir: str, split: str, *, docs: List[Dict[str, Any]], qas: L
     os.makedirs(d, exist_ok=True)
     pd.DataFrame(docs).to_parquet(os.path.join(d, "corpus.parquet"), index=False)
     pd.DataFrame(qas).to_parquet(os.path.join(d, "qa.parquet"), index=False)
+
+
+def _write_no_split(out_dir: str, *, docs: List[Dict[str, Any]], qas: List[Dict[str, Any]]) -> None:
+    os.makedirs(out_dir, exist_ok=True)
+    pd.DataFrame(docs).to_parquet(os.path.join(out_dir, "corpus.parquet"), index=False)
+    pd.DataFrame(qas).to_parquet(os.path.join(out_dir, "qa.parquet"), index=False)
 
 
 def main() -> None:
@@ -133,6 +144,27 @@ def main() -> None:
 
     qas_train = [x for x in (_to_qa(ex) for ex in train_ex) if x]
     qas_val = [x for x in (_to_qa(ex) for ex in val_ex) if x]
+
+    if bool(args.no_split):
+        qas_one = qas_train
+        if n_val > 0:
+            # de-dup by qid if user wanted both
+            seen = set()
+            qas_one = []
+            for item in qas_train + qas_val:
+                qid = item.get("qid")
+                if qid in seen:
+                    continue
+                seen.add(qid)
+                qas_one.append(item)
+
+        _write_no_split(out_dir, docs=docs, qas=qas_one)
+        print(
+            f"[OK] wrote dataset (no_split): {out_dir}\n"
+            f"  corpus_docs={len(docs)}\n"
+            f"  qas={len(qas_one)}"
+        )
+        return
 
     _write_split(out_dir, "train", docs=docs, qas=qas_train)
     _write_split(out_dir, "validation", docs=docs, qas=qas_val)

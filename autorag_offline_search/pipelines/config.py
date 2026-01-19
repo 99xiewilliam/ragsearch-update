@@ -58,6 +58,10 @@ class NormalizedConfig:
     # generator (fixed prompt, but model can be configured as a "non-hyperparam")
     generator_model: str
     generator_max_tokens: int
+    # LLM concurrency (async eval only; 0/1 means effectively sequential)
+    rewriter_max_inflight: int
+    pruner_max_inflight: int
+    generator_max_inflight: int
     # multimodal
     multimodal_metadata_enabled: bool
     # logging
@@ -172,6 +176,21 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
     # NOTE: generator_max_tokens is an *output* token budget for vLLM/OpenAI.
     # Use 32768 as a sentinel meaning "no explicit max_tokens" (see OpenAICompatLLM.generate()).
     generator_max_tokens = int(c.get("generator_max_tokens", 32768))
+
+    # Async LLM concurrency knobs (used by eval.py + *_async pipeline methods).
+    # Defaults are conservative for single-GPU vLLM:
+    # - rewriter/pruner tend to be short prompts -> higher concurrency is fine
+    # - generator can be long-context -> keep lower to avoid OOM / long queues
+    def _pos_int(v, default: int) -> int:
+        try:
+            x = int(v)
+            return x if x > 0 else int(default)
+        except Exception:
+            return int(default)
+
+    rewriter_max_inflight = _pos_int(c.get("rewriter_max_inflight", 0), 0)
+    pruner_max_inflight = _pos_int(c.get("pruner_max_inflight", 0), 0)
+    generator_max_inflight = _pos_int(c.get("generator_max_inflight", 0), 0)
     multimodal_metadata_enabled = bool(c.get("multimodal_metadata_enabled", True))
     module_logs = bool(c.get("module_logs", False))
 
@@ -209,6 +228,9 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
         pruner_mode=pruner_mode,
         generator_model=generator_model,
         generator_max_tokens=generator_max_tokens,
+        rewriter_max_inflight=rewriter_max_inflight,
+        pruner_max_inflight=pruner_max_inflight,
+        generator_max_inflight=generator_max_inflight,
         multimodal_metadata_enabled=multimodal_metadata_enabled,
         module_logs=module_logs,
     )

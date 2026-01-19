@@ -17,6 +17,95 @@ from .plugins.loader import load_object
 from .plugins.protocols import RagFactory
 from .search_space import SearchSpace, config_to_str
 
+_DEBUG_KEYS = {
+    "debug_trace_n",
+    "debug_trace_every",
+    "debug_trace_max_chars",
+    "debug_trace_split",
+    "debug_trace_trial",
+}
+
+
+def _config_signature(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Canonicalize a config dict for:
+    - checkpoint keying
+    - resume/skip duplicates
+
+    Drop per-trial debug keys to keep signature stable.
+    """
+    c = dict(cfg or {})
+    for k in list(c.keys()):
+        if k in _DEBUG_KEYS:
+            c.pop(k, None)
+    return c
+
+
+def _config_sig_str(cfg: Dict[str, Any]) -> str:
+    return config_to_str(_config_signature(cfg))
+
+
+def _load_jsonl(path: str) -> List[Dict[str, Any]]:
+    if not os.path.exists(path):
+        return []
+    out: List[Dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            s = str(line or "").strip()
+            if not s:
+                continue
+            try:
+                obj = json.loads(s)
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                out.append(obj)
+    return out
+
+
+def _atomic_write_json(path: str, obj: Any) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _trial_to_dict(t: Trial) -> Dict[str, Any]:
+    sig = t.meta.get("config_sig") if isinstance(getattr(t, "meta", None), dict) else None
+    if isinstance(sig, dict):
+        cfg_for_str = sig
+    else:
+        cfg_for_str = _config_signature(t.config)
+    return {
+        "reward": float(t.reward),
+        "seconds": float(t.seconds),
+        "metrics": dict(t.metrics or {}),
+        "config": dict(t.config or {}),
+        "config_sig": dict(cfg_for_str),
+        "config_str": config_to_str(dict(cfg_for_str)),
+        "meta": dict(t.meta or {}),
+        "error": t.error,
+    }
+
+
+def _trial_from_checkpoint(obj: Dict[str, Any]) -> Optional[Trial]:
+    if not isinstance(obj, dict):
+        return None
+    try:
+        reward = float(obj.get("reward", 0.0))
+        seconds = float(obj.get("seconds", 0.0))
+        metrics = dict(obj.get("metrics") or {})
+        cfg_sig = obj.get("config_sig")
+        cfg_sig = dict(cfg_sig) if isinstance(cfg_sig, dict) else None
+        cfg = dict(obj.get("config") or {})
+        meta = dict(obj.get("meta") or {})
+        if cfg_sig is not None:
+            meta = {**meta, "config_sig": cfg_sig, "config_sig_str": config_to_str(cfg_sig)}
+        return Trial(config=cfg or (cfg_sig or {}), reward=reward, metrics=metrics, seconds=seconds, meta=meta, error=obj.get("error"))
+    except Exception:
+        return None
+
+
 def _worker_run_algorithm(
     gpu_id: Optional[int],
     algo_name: str,
@@ -42,6 +131,10 @@ def run_one_algorithm(
     train_trials: int,
     seed: int,
     no_validation: bool = False,
+    run_dir: str = "",
+    resume: bool = False,
+    checkpoint_every: int = 1,
+    show_trial_progress: bool = False,
     grpo_group_size: int = 0,
     tpe_patience: int = 0,
     tpe_min_delta: float = 0.0,
@@ -69,8 +162,46 @@ def run_one_algorithm(
             "generator": space.generator,
         }
 
-    seen = 0
-    best_so_far: Optional[Trial] = None
+    # --- Resume / checkpoint ---
+    ckpt_dir = os.path.join(run_dir or ".", ".checkpoints")
+    ckpt_path = os.path.join(ckpt_dir, f"train_trials_{algo_name}.jsonl")
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    restored_trials: List[Trial] = []
+    seen_sig: set[str] = set()
+    if bool(resume):
+        for o in _load_jsonl(ckpt_path):
+            tr0 = _trial_from_checkpoint(o)
+            if tr0 is None:
+                continue
+            restored_trials.append(tr0)
+            # Prefer stored config_sig_str if present; else compute from config
+            s0 = None
+            if isinstance(tr0.meta, dict):
+                s0 = tr0.meta.get("config_sig_str")
+            if not isinstance(s0, str) or not s0:
+                s0 = _config_sig_str(tr0.config)
+            seen_sig.add(str(s0))
+
+    seen = len(restored_trials)
+    best_so_far: Optional[Trial] = best_trial(restored_trials) if restored_trials else None
+
+    # Per-algo trial progress bar
+    pbar = None
+    if show_trial_progress:
+        try:
+            from tqdm import tqdm
+
+            pbar = tqdm(total=int(train_trials), initial=int(seen), desc=f"{algo_name}:trials", leave=True)
+        except Exception:
+            pbar = None
+
+    # Open checkpoint writer (append-only) when resuming/checkpointing is enabled.
+    ckpt_f = None
+    if bool(resume):
+        ckpt_f = open(ckpt_path, "a", encoding="utf-8")
+    ckpt_flush_every = max(1, int(checkpoint_every) if checkpoint_every else 1)
+    ckpt_wrote = 0
 
     def validate_cfg(cfg: Dict) -> bool:
         # Keep this lightweight: just quick guards to avoid obviously invalid combos.
@@ -80,10 +211,20 @@ def run_one_algorithm(
                     return False
             except Exception:
                 return False
+        # If resuming, reject configs already evaluated (based on merged signature).
+        if bool(resume) and seen_sig:
+            merged = dict(cfg or {})
+            if config_base:
+                merged.update(config_base)
+            if config_inject:
+                merged.update(config_inject)
+            sig = _config_sig_str(merged)
+            if sig in seen_sig:
+                return False
         return True
 
     def objective(cfg: Dict) -> Trial:
-        nonlocal seen, best_so_far
+        nonlocal seen, best_so_far, ckpt_wrote
         # Merge order (pinning):
         # - cfg (from search space / algorithm proposal)
         # - config_base (YAML / user-provided overrides that should take precedence)
@@ -92,6 +233,9 @@ def run_one_algorithm(
             cfg = {**cfg, **config_base}
         if config_inject:
             cfg = {**cfg, **config_inject}
+        # Signature before adding per-trial debug keys
+        sig_cfg = _config_signature(cfg)
+        sig_str = config_to_str(sig_cfg)
         # Debug/trace controls (evaluated per objective call / trial)
         # Note: we keep these keys in config (not in eval kwargs) so Rag implementations can also
         # optionally read them in the future.
@@ -112,8 +256,16 @@ def run_one_algorithm(
             show_progress=show_eval_progress,
             split_name="train",
         )
-        tr = Trial(config=cfg, reward=res.weighted_reward, metrics=res.per_metric, seconds=stats.seconds)
+        tr = Trial(
+            config=cfg,
+            reward=res.weighted_reward,
+            metrics=res.per_metric,
+            seconds=stats.seconds,
+            meta={"config_sig": sig_cfg, "config_sig_str": sig_str},
+        )
         seen += 1
+        if bool(resume):
+            seen_sig.add(sig_str)
         if best_so_far is None or tr.reward > best_so_far.reward:
             best_so_far = tr
         if verbose and log_every > 0 and (seen % log_every == 0):
@@ -124,6 +276,17 @@ def run_one_algorithm(
                 f"({m_str}) "
                 f"best={best_so_far.reward:.6f}"
             )
+        # checkpoint + progress update
+        if ckpt_f is not None:
+            ckpt_f.write(json.dumps(_trial_to_dict(tr), ensure_ascii=False) + "\n")
+            ckpt_wrote += 1
+            if ckpt_wrote % ckpt_flush_every == 0:
+                ckpt_f.flush()
+        if pbar is not None:
+            try:
+                pbar.update(1)
+            except Exception:
+                pass
         return tr
 
     def _make_algo(name: str, *, seed_for_algo: int):
@@ -232,6 +395,7 @@ def run_one_algorithm(
             space=space_dict,
             configs=all_cfgs,
             validate=validate_cfg,
+            on_trial=None,
         )
         run = getattr(algo_obj, "run", None)
         if not callable(run):
@@ -242,54 +406,59 @@ def run_one_algorithm(
     # --- Composite / portfolio algorithms ---
     # 目标：只用 train 的 reward 选最终 config，然后在 validation 上评估一次，比较稳定性/平均表现。
     # 注意：总预算 train_trials 不变；组合算法内部会分配预算给子算法。
+    remaining_budget = max(0, int(train_trials) - len(restored_trials))
+
     if algo_name == "portfolio_grpo_ts_tpe":
         sub_algos = ["grpo", "ts", "tpe"]
         # 平均分预算（至少每个 1 次）
-        base = max(1, train_trials // len(sub_algos))
+        base = max(1, remaining_budget // len(sub_algos)) if remaining_budget > 0 else 0
         budgets = [base] * len(sub_algos)
         # 把余数补给前几个（优先给 GRPO/TS 这类更“利用”的）
-        rem = max(0, train_trials - sum(budgets))
+        rem = max(0, remaining_budget - sum(budgets))
         for i in range(rem):
             budgets[i % len(budgets)] += 1
 
-        train_trial_list: List[Trial] = []
+        train_trial_list = list(restored_trials)
         for i, (sa, b) in enumerate(zip(sub_algos, budgets)):
             if verbose:
                 print(f"[{algo_name}] sub_algo={sa} budget={b}")
             # 用不同 seed 偏移，减少完全相关的随机性
             algo = _make_algo(sa, seed_for_algo=int(seed) + 1000 + i)
-            train_trial_list.extend(_run_trials(algo, b=int(b), seed_for_algo=int(seed) + 1000 + i))
+            if int(b) > 0:
+                train_trial_list.extend(_run_trials(algo, b=int(b), seed_for_algo=int(seed) + 1000 + i))
 
     elif algo_name == "portfolio_grpo_greedy":
         sub_algos = ["grpo", "greedy"]
-        base = max(1, train_trials // len(sub_algos))
+        base = max(1, remaining_budget // len(sub_algos)) if remaining_budget > 0 else 0
         budgets = [base] * len(sub_algos)
-        rem = max(0, train_trials - sum(budgets))
+        rem = max(0, remaining_budget - sum(budgets))
         for i in range(rem):
             budgets[i % len(budgets)] += 1
 
-        train_trial_list = []
+        train_trial_list = list(restored_trials)
         for i, (sa, b) in enumerate(zip(sub_algos, budgets)):
             if verbose:
                 print(f"[{algo_name}] sub_algo={sa} budget={b}")
             algo = _make_algo(sa, seed_for_algo=int(seed) + 3000 + i)
-            train_trial_list.extend(_run_trials(algo, b=int(b), seed_for_algo=int(seed) + 3000 + i))
+            if int(b) > 0:
+                train_trial_list.extend(_run_trials(algo, b=int(b), seed_for_algo=int(seed) + 3000 + i))
 
     elif algo_name == "two_stage_tpe_then_grpo":
         # 两阶段：TPE 探索 -> GRPO 精炼（不做 warm-start，仅顺序分配预算）
-        if train_trials <= 1:
+        if remaining_budget <= 1:
             b_tpe, b_grpo = 1, 0
         else:
-            b_tpe = max(1, int(round(train_trials * 0.3)))
-            b_grpo = max(0, train_trials - b_tpe)
+            b_tpe = max(1, int(round(remaining_budget * 0.3)))
+            b_grpo = max(0, remaining_budget - b_tpe)
 
         # 如果你想更“偏向 GRPO”，可以把 0.3 调到 0.2
 
-        train_trial_list = []
+        train_trial_list = list(restored_trials)
         if verbose:
             print(f"[{algo_name}] stage=tpe budget={b_tpe}")
         algo_tpe = _make_algo("tpe", seed_for_algo=int(seed) + 2000)
-        train_trial_list.extend(_run_trials(algo_tpe, b=int(b_tpe), seed_for_algo=int(seed) + 2000))
+        if int(b_tpe) > 0:
+            train_trial_list.extend(_run_trials(algo_tpe, b=int(b_tpe), seed_for_algo=int(seed) + 2000))
         if b_grpo > 0:
             if verbose:
                 print(f"[{algo_name}] stage=grpo budget={b_grpo}")
@@ -298,17 +467,18 @@ def run_one_algorithm(
 
     elif algo_name == "two_stage_tpe_then_grpo_a2":
         # Two-stage: TPE explore -> GRPO-A++ exploit (higher chance to beat pure TPE under interactions)
-        if train_trials <= 1:
+        if remaining_budget <= 1:
             b_tpe, b_grpo = 1, 0
         else:
-            b_tpe = max(1, int(round(train_trials * 0.3)))
-            b_grpo = max(0, train_trials - b_tpe)
+            b_tpe = max(1, int(round(remaining_budget * 0.3)))
+            b_grpo = max(0, remaining_budget - b_tpe)
 
-        train_trial_list = []
+        train_trial_list = list(restored_trials)
         if verbose:
             print(f"[{algo_name}] stage=tpe budget={b_tpe}")
         algo_tpe = _make_algo("tpe", seed_for_algo=int(seed) + 2100)
-        train_trial_list.extend(_run_trials(algo_tpe, b=int(b_tpe), seed_for_algo=int(seed) + 2100))
+        if int(b_tpe) > 0:
+            train_trial_list.extend(_run_trials(algo_tpe, b=int(b_tpe), seed_for_algo=int(seed) + 2100))
         if b_grpo > 0:
             if verbose:
                 print(f"[{algo_name}] stage=grpo_a2 budget={b_grpo}")
@@ -317,7 +487,21 @@ def run_one_algorithm(
 
     else:
         algo = _make_algo(algo_name, seed_for_algo=int(seed))
-        train_trial_list = _run_trials(algo, b=int(train_trials), seed_for_algo=int(seed))
+        train_trial_list = list(restored_trials)
+        if remaining_budget > 0:
+            train_trial_list.extend(_run_trials(algo, b=int(remaining_budget), seed_for_algo=int(seed)))
+
+    if pbar is not None:
+        try:
+            pbar.close()
+        except Exception:
+            pass
+    if ckpt_f is not None:
+        try:
+            ckpt_f.flush()
+            ckpt_f.close()
+        except Exception:
+            pass
 
     best = best_trial(train_trial_list)
     if best is None:
@@ -348,7 +532,7 @@ def run_one_algorithm(
                 dump_item_prefix={
                     "split": "eval",
                     "algo": algo_name,
-                    "config_str": config_to_str(best.config),
+                    "config_str": str(best.meta.get("config_sig_str") or _config_sig_str(best.config)),
                     "note": "no_validation",
                 },
                 dump_limit=int(dump_val_limit) if dump_val_limit else 0,
@@ -358,7 +542,7 @@ def run_one_algorithm(
                 "seconds": val_stats.seconds,
                 "metrics": val_res.per_metric,
                 "config": best.config,
-                "config_str": config_to_str(best.config),
+                "config_str": str(best.meta.get("config_sig_str") or _config_sig_str(best.config)),
                 "note": "no_validation",
             }
         else:
@@ -368,7 +552,7 @@ def run_one_algorithm(
                 "seconds": best.seconds,
                 "metrics": best.metrics,
                 "config": best.config,
-                "config_str": config_to_str(best.config),
+                "config_str": str(best.meta.get("config_sig_str") or _config_sig_str(best.config)),
                 "note": "no_validation",
             }
     else:
@@ -396,19 +580,21 @@ def run_one_algorithm(
             "seconds": val_stats.seconds,
             "metrics": val_res.per_metric,
             "config": best.config,
-            "config_str": config_to_str(best.config),
+            "config_str": str(best.meta.get("config_sig_str") or _config_sig_str(best.config)),
         }
 
     return {
         "algo": algo_name,
         "no_validation": bool(no_validation),
+        "resume": bool(resume),
+        "checkpoint_path": ckpt_path if bool(resume) else "",
         "train_trials": [
             {
                 "reward": t.reward,
                 "seconds": t.seconds,
                 "metrics": t.metrics,
                 "config": t.config,
-                "config_str": config_to_str(t.config),
+                "config_str": str((t.meta or {}).get("config_sig_str") or _config_sig_str(t.config)),
             }
             for t in train_trial_list
         ],
@@ -417,7 +603,7 @@ def run_one_algorithm(
             "seconds": best.seconds,
             "metrics": best.metrics,
             "config": best.config,
-            "config_str": config_to_str(best.config),
+            "config_str": str(best.meta.get("config_sig_str") or _config_sig_str(best.config)),
         },
         "best_train_global": (
             {
@@ -465,6 +651,10 @@ def run_dataset(
     verbose: bool = False,
     log_every: int = 1,
     show_eval_progress: bool = False,
+    show_trial_progress: bool = False,
+    resume: bool = False,
+    checkpoint_every: int = 1,
+    request_parallelism: str = "auto",
     dump_val_generations: bool = False,
     dump_val_limit: int = 0,
 ) -> Dict:
@@ -559,6 +749,12 @@ def run_dataset(
         return None
 
     if space_overrides:
+        # Standardization: if a key is defined in 'space', it should NOT be taken from 'base'.
+        # This prevents confusion where 'base' accidentally pins a searchable parameter.
+        for k in space_overrides.keys():
+            if k in fixed_base:
+                fixed_base.pop(k)
+
         pipeline_hint = str(fixed_base.get("pipeline") or "")
         # If user pins pipeline in base, also restrict the enumerated search space pipeline.
         # Otherwise, configs generated for other pipelines may leak in, and then get "re-labeled"
@@ -624,6 +820,8 @@ def run_dataset(
         inject["generator_max_tokens"] = int(generator_max_tokens)
     if bm25_weight is not None and float(bm25_weight) >= 0.0:
         inject["bm25_weight"] = float(bm25_weight)
+    if request_parallelism:
+        inject["request_parallelism"] = str(request_parallelism)
 
     # Multi-GPU Parallel execution
     # Determine GPU IDs to use
@@ -677,6 +875,10 @@ def run_dataset(
                     "train_trials": train_trials,
                     "seed": seed,
                     "no_validation": bool(no_validation),
+                    "run_dir": out_dir,
+                    "resume": bool(resume),
+                    "checkpoint_every": int(checkpoint_every) if checkpoint_every else 1,
+                    "show_trial_progress": False,
                     "grpo_group_size": grpo_group_size,
                     "tpe_patience": tpe_patience,
                     "tpe_min_delta": tpe_min_delta,
@@ -697,6 +899,19 @@ def run_dataset(
             for future in futures:
                 name, res = future.result()
                 results[name] = res
+                # write incremental results to survive interruptions
+                summary_partial = {
+                    "dataset_dir": dataset_dir,
+                    "algos": list(algos),
+                    "train_trials_budget": train_trials,
+                    "no_validation": bool(no_validation),
+                    "metrics_weights": metrics_cfg.weights,
+                    "bertscore_model": metrics_cfg.bertscore_model,
+                    "rag_plugin": rag_plugin or "autorag_offline_search.plugins.rag:UnifiedRag",
+                    "space_plugin": space_plugin or None,
+                    "results": results,
+                }
+                _atomic_write_json(os.path.join(out_dir, "results.json"), summary_partial)
     else:
         # Sequential execution (original behavior)
         for a in algos:
@@ -715,6 +930,10 @@ def run_dataset(
                 train_trials=train_trials,
                 seed=seed,
                 no_validation=bool(no_validation),
+                run_dir=out_dir,
+                resume=bool(resume),
+                checkpoint_every=int(checkpoint_every) if checkpoint_every else 1,
+                show_trial_progress=bool(show_trial_progress),
                 grpo_group_size=grpo_group_size,
                 tpe_patience=tpe_patience,
                 tpe_min_delta=tpe_min_delta,
@@ -731,6 +950,19 @@ def run_dataset(
                 dump_val_predictions_path=dump_path,
                 dump_val_limit=int(dump_val_limit) if dump_val_limit else 0,
             )
+            # write incremental results to survive interruptions
+            summary_partial = {
+                "dataset_dir": dataset_dir,
+                "algos": list(algos),
+                "train_trials_budget": train_trials,
+                "no_validation": bool(no_validation),
+                "metrics_weights": metrics_cfg.weights,
+                "bertscore_model": metrics_cfg.bertscore_model,
+                "rag_plugin": rag_plugin or "autorag_offline_search.plugins.rag:UnifiedRag",
+                "space_plugin": space_plugin or None,
+                "results": results,
+            }
+            _atomic_write_json(os.path.join(out_dir, "results.json"), summary_partial)
 
     summary = {
         "dataset_dir": dataset_dir,
@@ -744,8 +976,7 @@ def run_dataset(
         "results": results,
     }
 
-    with open(os.path.join(out_dir, "results.json"), "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(os.path.join(out_dir, "results.json"), summary)
 
     # write a small CSV-ish summary (tab-separated) for quick comparison
     m_keys = sorted(metrics_cfg.weights.keys())

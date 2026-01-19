@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .llm import LLMConfig, OpenAICompatLLM
+from .llm import LLMConfig, OpenAICompatAsyncLLM, OpenAICompatLLM
 from .prompts import GENERATOR_PROMPT
 
 
@@ -29,4 +29,28 @@ def generate_answer_with_images(*, query: str, context: str, image_paths: list[s
     prompt = GENERATOR_PROMPT.format(context=context, question=query)
     llm = OpenAICompatLLM(LLMConfig(base_url=llm_base_url, model=cfg.model, temperature=0.0))
     return llm.generate_with_images(prompt=prompt, image_paths=list(image_paths or []), max_tokens=int(cfg.max_tokens)).strip()
+
+
+async def generate_answer_async(*, query: str, context: str, cfg: GeneratorConfig, llm_base_url: str, semaphore=None) -> str:
+    prompt = GENERATOR_PROMPT.format(context=context, question=query)
+    llm = OpenAICompatAsyncLLM(LLMConfig(base_url=llm_base_url, model=cfg.model, temperature=0.0))
+    if semaphore is not None:
+        async with semaphore:
+            out = await llm.generate(prompt=prompt, max_tokens=int(cfg.max_tokens))
+    else:
+        out = await llm.generate(prompt=prompt, max_tokens=int(cfg.max_tokens))
+    return out.strip()
+
+
+async def generate_answer_with_images_async(
+    *, query: str, context: str, image_paths: list[str], cfg: GeneratorConfig, llm_base_url: str, semaphore=None
+) -> str:
+    prompt = GENERATOR_PROMPT.format(context=context, question=query)
+    llm = OpenAICompatAsyncLLM(LLMConfig(base_url=llm_base_url, model=cfg.model, temperature=0.0))
+    if semaphore is not None:
+        async with semaphore:
+            out = await llm.generate_with_images(prompt=prompt, image_paths=list(image_paths or []), max_tokens=int(cfg.max_tokens))
+    else:
+        out = await llm.generate_with_images(prompt=prompt, image_paths=list(image_paths or []), max_tokens=int(cfg.max_tokens))
+    return out.strip()
 

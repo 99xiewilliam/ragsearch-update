@@ -125,6 +125,11 @@ def main() -> None:
     p.add_argument("--out_dir", type=str, default="/home/xwh/ragsearch-update/datasets/m2rag_mmqa_test10")
     p.add_argument("--n", type=int, default=10, help="How many examples to sample from mmqa/test_data.jsonl")
     p.add_argument(
+        "--no_split",
+        action="store_true",
+        help="If set, write a single-file dataset (corpus.parquet + qa.parquet) under out_dir, without train/validation folders.",
+    )
+    p.add_argument(
         "--only_text",
         action="store_true",
         help="Only keep examples with pos_text and without pos_image_path (useful when you don't have a VL model served).",
@@ -153,7 +158,15 @@ def main() -> None:
     corpus = pd.DataFrame(corpus_rows)
     qa = pd.DataFrame(qa_rows)
 
-    # For smoke tests, duplicate into both splits to keep the CLI happy.
+    if bool(args.no_split):
+        corpus.to_parquet(out / "corpus.parquet", index=False)
+        qa.to_parquet(out / "qa.parquet", index=False)
+        print(f"[OK] wrote dataset (no_split): {out}")
+        print(f"  docs={len(corpus_rows)} qas={len(qa_rows)}")
+        print(f"  assets={asset_dir}")
+        return
+
+    # Split layout: duplicate into both splits to keep the CLI happy.
     for split in ("train", "validation"):
         corpus.to_parquet(out / split / "corpus.parquet", index=False)
         qa.to_parquet(out / split / "qa.parquet", index=False)

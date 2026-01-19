@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import List
 
-from .llm import LLMConfig, OpenAICompatLLM
+from .llm import LLMConfig, OpenAICompatAsyncLLM, OpenAICompatLLM
 
 
 _INT_RE = re.compile(r"\d+")
@@ -60,6 +60,60 @@ def prune_chunks(
         return result if compressed_map else chunks
     else:
         # Original "select" mode: parse indices and return selected chunks
+        idx = [int(m.group(0)) for m in _INT_RE.finditer(out or "")]
+        keep = []
+        seen = set()
+        for i in idx:
+            if 0 <= i < len(chunks) and i not in seen:
+                seen.add(i)
+                keep.append(chunks[i])
+        return keep or chunks
+
+
+async def prune_chunks_async(
+    *,
+    query: str,
+    chunks: List[str],
+    cfg: PrunerConfig,
+    llm_base_url: str,
+    model_resolver,
+    semaphore=None,
+) -> List[str]:
+    """
+    Async pruner with optional concurrency limiting via `asyncio.Semaphore`.
+    """
+    if not cfg.enabled or not chunks:
+        return chunks
+    prompt = (cfg.prompt or "").format(
+        query=query,
+        chunks="\n".join([f"[{i}] {t}" for i, t in enumerate(chunks)]),
+    )
+    if not prompt.strip():
+        return chunks
+    llm_model = model_resolver(cfg.model)
+    llm = OpenAICompatAsyncLLM(LLMConfig(base_url=llm_base_url, model=llm_model, temperature=0.0))
+    if semaphore is not None:
+        async with semaphore:
+            out = await llm.generate(prompt=prompt, max_tokens=int(cfg.max_tokens))
+    else:
+        out = await llm.generate(prompt=prompt, max_tokens=int(cfg.max_tokens))
+
+    if cfg.mode == "compress":
+        compressed_map: dict[int, str] = {}
+        for match in _COMPRESS_RE.finditer(out or ""):
+            idx = int(match.group(1))
+            content = match.group(2).strip()
+            if 0 <= idx < len(chunks) and content:
+                compressed_map[idx] = content
+
+        result = []
+        for i, orig in enumerate(chunks):
+            if i in compressed_map:
+                result.append(compressed_map[i])
+            else:
+                result.append(orig)
+        return result if compressed_map else chunks
+    else:
         idx = [int(m.group(0)) for m in _INT_RE.finditer(out or "")]
         keep = []
         seen = set()

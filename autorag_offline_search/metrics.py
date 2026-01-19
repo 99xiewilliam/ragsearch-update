@@ -69,44 +69,93 @@ def compute_chrf(pred: str, refs: List[str]) -> float:
 
 
 def compute_exact_match(pred: str, refs: List[str]) -> float:
+    """
+    Exact Match score with official HotPotQA / SQuAD normalization.
+    """
     if not refs:
         return 0.0
-    p = pred.strip().lower()
+
+    def normalize(s):
+        import re
+        import string
+
+        def remove_articles(text):
+            return re.sub(r"\b(a|an|the)\b", " ", text)
+
+        def white_space_fix(text):
+            return " ".join(text.split())
+
+        def remove_punc(text):
+            exclude = set(string.punctuation)
+            return "".join(ch for ch in text if ch not in exclude)
+
+        def lower(text):
+            return text.lower()
+
+        return white_space_fix(remove_articles(remove_punc(lower(s))))
+
+    p = normalize(pred)
     for r in refs:
-        if p == r.strip().lower():
+        if p == normalize(r):
             return 1.0
     return 0.0
 
 
 def compute_qa_f1(pred: str, refs: List[str]) -> float:
     """
-    Token-level F1 score, common in SQuAD/QA tasks.
+    Token-level F1 score with official HotPotQA/SQuAD logic.
+    Special handling for yes/no/noanswer.
     """
     if not refs or not pred:
         return 0.0
 
-    def get_tokens(s):
-        return s.lower().split()
+    def normalize(s):
+        import re
+        import string
 
-    p_tokens = get_tokens(pred)
-    if not p_tokens:
+        def remove_articles(text):
+            return re.sub(r"\b(a|an|the)\b", " ", text)
+
+        def white_space_fix(text):
+            return " ".join(text.split())
+
+        def remove_punc(text):
+            exclude = set(string.punctuation)
+            return "".join(ch for ch in text if ch not in exclude)
+
+        def lower(text):
+            return text.lower()
+
+        return white_space_fix(remove_articles(remove_punc(lower(s))))
+
+    norm_p = normalize(pred)
+    if not norm_p:
         return 0.0
+    p_tokens = norm_p.split()
 
     best_f1 = 0.0
     from collections import Counter
 
     for ref in refs:
-        r_tokens = get_tokens(ref)
-        if not r_tokens:
-            continue
-        common = Counter(p_tokens) & Counter(r_tokens)
-        num_same = sum(common.values())
-        if num_same == 0:
+        norm_r = normalize(ref)
+        # HotPotQA special: if one is yes/no/noanswer and they don't match, F1=0
+        if norm_p in ["yes", "no", "noanswer"] and norm_p != norm_r:
+            f1 = 0.0
+        elif norm_r in ["yes", "no", "noanswer"] and norm_p != norm_r:
             f1 = 0.0
         else:
-            precision = 1.0 * num_same / len(p_tokens)
-            recall = 1.0 * num_same / len(r_tokens)
-            f1 = (2 * precision * recall) / (precision + recall)
+            r_tokens = norm_r.split()
+            if not r_tokens:
+                f1 = 0.0
+            else:
+                common = Counter(p_tokens) & Counter(r_tokens)
+                num_same = sum(common.values())
+                if num_same == 0:
+                    f1 = 0.0
+                else:
+                    precision = 1.0 * num_same / len(p_tokens)
+                    recall = 1.0 * num_same / len(r_tokens)
+                    f1 = (2 * precision * recall) / (precision + recall)
         best_f1 = max(best_f1, f1)
     return best_f1
 
@@ -285,6 +334,9 @@ def parse_weights(spec: str) -> Dict[str, float]:
             "semilarity": "similarity",
             "semantic_similarity": "similarity",
             "sim": "similarity",
+            # M2RAG-style proxy metrics
+            "m2rag": "m2rag_overall",
+            "m2rag_overall": "m2rag_overall",
         }
         key = aliases.get(k_norm, raw_k)
         out[key] = float(v.strip())

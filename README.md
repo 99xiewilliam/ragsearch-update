@@ -143,7 +143,9 @@ python -m autorag_offline_search.cli \
 - **`--metrics_weights`**：reward 的加权方式，例如：
   - `qa_f1:1,em:1`（HotPotQA 常用）
   - `em:1,rougeL:1,accuracy:1`
+  - `m2rag_overall:1`（M2RAG 风格 8 指标 overall，项目内为可计算的 proxy 版本）
   支持指标键：`rouge1/rouge2/rougeL/meteor/bleu/bertscore_f1/em/qa_f1/chrf/similarity/accuracy`
+  以及：`m2rag_fluency/m2rag_response_relevancy/m2rag_context_precision/m2rag_faithfulness/m2rag_image_coherence/m2rag_image_helpfulness/m2rag_image_reference/m2rag_image_recall/m2rag_overall`
 - **`--bertscore_model`**：当 weights 里包含 `bertscore_f1` 时使用的模型（默认 `microsoft/deberta-xlarge-mnli`）
 
 ### GRPO / TPE（可选控制）

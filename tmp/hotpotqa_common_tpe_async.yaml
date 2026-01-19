@@ -1,0 +1,39 @@
+base:
+  pipeline: common
+  # Generator: must match the model name/path exposed by your OpenAI-compatible endpoint.
+  generator_model: "/home/xwh/models/Qwen3-4B-Instruct-2507"
+  # Keep output short for faster trials.
+  generator_max_tokens: 256
+
+  # Enable async eval + per-module concurrency limiting (effective on single-GPU vLLM).
+  rewriter_max_inflight: 32
+  pruner_max_inflight: 32
+  generator_max_inflight: 8
+
+space:
+  # Pin to known-available models to avoid unexpected downloads.
+  embedder_model: ["BAAI/bge-m3"]
+  reranker_model: ["none", "/home/xwh/models/ms-marco-MiniLM-L6-v2"]
+
+  # Unified retrieval knob: 0=cosine, 1=bm25, (0,1)=hybrid
+  bm25_weight:
+    low: 0.0
+    high: 1.0
+    steps: 6
+  retriever_topk: [3, 5, 10]
+
+  # Chunking
+  chunking_enabled: [false, true]
+  chunk_size: [256, 512]
+
+  # Rewriter
+  rewriter_enabled: [false, true]
+  rewriter_prompt_id: ["rewrite_v1", "rewrite_v2_keywords"]
+
+  # Reranker
+  reranker_enabled: [false, true]
+  rerank_topk: [3, 5, 10]
+
+  # Pruner
+  pruner_enabled: [false, true]
+  pruner_mode: ["select", "compress"]
