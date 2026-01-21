@@ -11,6 +11,7 @@ set -e  # 出错即停止
 # 设置项目根目录
 PROJ_ROOT="/home/xwh/ragsearch-update"
 export PYTHONPATH="$PROJ_ROOT"
+export PYTHONUNBUFFERED=1
 
 # 创建日志目录
 mkdir -p "$PROJ_ROOT/runs/logs"
@@ -26,6 +27,8 @@ python scripts/oracle_upper_bound.py \
   --llm_base_url http://localhost:9001/v1 \
   --generator_model "/home/xwh/models/Qwen3-4B-Instruct-2507" \
   --metrics_weights "em:1,qa_f1:1" \
+  --oracle_mode posthoc_bm25 \
+  --oracle_k 10 \
   > runs/logs/oracle_hotpot.log 2>&1
 
 # 2. MiniWiki Upper Bound
@@ -35,6 +38,8 @@ python scripts/oracle_upper_bound.py \
   --llm_base_url http://localhost:9001/v1 \
   --generator_model "/home/xwh/models/Qwen3-4B-Instruct-2507" \
   --metrics_weights "em:1,qa_f1:1" \
+  --oracle_mode posthoc_bm25 \
+  --oracle_k 10 \
   > runs/logs/oracle_miniwiki.log 2>&1
 
 # 3. M2RAG Upper Bound
@@ -42,7 +47,7 @@ echo "[3/3] Calculating M2RAG Upper Bound..."
 python scripts/oracle_upper_bound.py \
   --dataset_dir datasets/m2rag_mmqa_100 \
   --llm_base_url http://localhost:9000/v1 \
-  --generator_model "/home/xwh/models/Qwen2-VL-7B-Instruct" \
+  --generator_model "/home/xwh/models/Qwen3-VL-4B-Instruct" \
   --metrics_weights "m2rag_overall:1" \
   --allow_images \
   > runs/logs/oracle_m2rag.log 2>&1
@@ -65,6 +70,7 @@ for algo in random tpe grpo; do
     --algo "$algo" \
     --train_trials 10 \
     --metrics_weights "em:1,qa_f1:1" \
+    --module_logs \
     --show_trial_progress \
     --resume \
     > "runs/logs/baseline_hotpot_$algo.log" 2>&1
@@ -81,6 +87,7 @@ for algo in random tpe grpo; do
     --algo "$algo" \
     --train_trials 10 \
     --metrics_weights "em:1,qa_f1:1,rougeL:1" \
+    --module_logs \
     --show_trial_progress \
     --resume \
     > "runs/logs/baseline_miniwiki_$algo.log" 2>&1
@@ -88,18 +95,20 @@ done
 
 # 3. M2RAG 对比 (9000 端口)
 echo ">>> Running M2RAG Baseline..."
-for algo in random tpe grpo; do
+# 只重跑 tpe / grpo，并使用新的 out_dir（避免 --resume 续跑旧 checkpoint）
+for algo in tpe grpo; do
   echo "  - Algo: $algo"
   python -m autorag_offline_search.cli \
     --config tmp/template_multimodal.yaml \
     --dataset_dir datasets/m2rag_mmqa_100 \
-    --out_dir "./runs/m2rag_$algo" \
+    --out_dir "./runs/m2rag_${algo}_v4" \
     --algo "$algo" \
     --train_trials 10 \
     --metrics_weights "m2rag_overall:1" \
+    --module_logs \
     --show_trial_progress \
     --resume \
-    > "runs/logs/baseline_m2rag_$algo.log" 2>&1
+    > "runs/logs/baseline_m2rag_${algo}_v4.log" 2>&1
 done
 
 echo ""

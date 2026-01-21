@@ -12,6 +12,7 @@ class QAExample:
     qid: str
     query: str
     generation_gt: List[str]  # allow multiple refs
+    metadata: Optional[JsonDict] = None
 
 
 @dataclass(frozen=True)

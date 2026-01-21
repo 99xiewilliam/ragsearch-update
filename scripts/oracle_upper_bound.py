@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from autorag_offline_search.data import load_split
 from autorag_offline_search.metrics import MetricsConfig, aggregate_reward, compute_rouge, parse_weights
 from autorag_offline_search.m2rag_metrics import compute_m2rag_proxy
+from autorag_offline_search.modules.retrieval import BM25Index
 from autorag_offline_search.modules.generator_fixed import GeneratorConfig, generate_answer, generate_answer_with_images
 from autorag_offline_search.modules.multimodal_utils import extract_image_paths
 from autorag_offline_search.pipelines.config import resolve_model
@@ -59,6 +60,16 @@ def _oracle_doc_for_qa(docs: Sequence[Doc], qa: QAExample) -> Optional[Doc]:
             if isinstance(md, dict) and str(md.get("m2rag_id", "")).strip() == qid:
                 return d
 
+    # HotPotQA (sample builder can store supporting_doc_ids in QA metadata)
+    qmd = qa.metadata or {}
+    if isinstance(qmd, dict):
+        supp = qmd.get("supporting_doc_ids") or qmd.get("supporting_docs") or None
+        if isinstance(supp, (list, tuple)) and supp:
+            wanted_ids = {str(x).strip() for x in list(supp) if str(x).strip()}
+            for d in docs:
+                if str(d.doc_id or "").strip() in wanted_ids:
+                    return d
+
     # Fallback: try to find a doc containing any reference answer string.
     # This is only an approximation of "upper bound" when gold evidence is not available.
     refs = list(qa.generation_gt or [])
@@ -82,6 +93,76 @@ def _oracle_context_and_images(d: Doc, *, allow_images: bool) -> Tuple[str, List
     return ctx, imgs[:2]
 
 
+def _posthoc_bm25_best_of_k(
+    *,
+    docs: Sequence[Doc],
+    bm25: BM25Index,
+    qa: QAExample,
+    k: int,
+    model: str,
+    llm_base_url: str,
+    max_tokens: int,
+    metrics_cfg: MetricsConfig,
+) -> Tuple[str, str, Optional[str]]:
+    """
+    Post-hoc 'oracle' (cheating upper bound approximation):
+    - Retrieve top-k docs by BM25 for the question
+    - Run generator on each candidate context
+    - Pick the prediction that maximizes weighted reward (based on metrics_weights)
+
+    Returns: (best_pred, best_doc_id, best_ctx_preview)
+    """
+    q = str(qa.query or "")
+    refs = list(qa.generation_gt or [])
+    # BM25Index API: .query(query, topk) -> list[int]
+    try:
+        idx = bm25.topk(q, k=max(1, int(k)))
+    except Exception:
+        idx = []
+    best_pred = ""
+    best_doc_id = ""
+    best_reward = -1e9
+    best_ctx_preview: Optional[str] = None
+
+    for i in idx:
+        try:
+            d = docs[int(i)]
+        except Exception:
+            continue
+        ctx = str(d.contents or "").strip()
+        pred = generate_answer(
+            query=q,
+            context=ctx,
+            cfg=GeneratorConfig(model=model, max_tokens=int(max_tokens)),
+            llm_base_url=str(llm_base_url),
+        )
+        # compute weighted reward for this candidate
+        r = compute_rouge(pred, refs)
+        per_metric: Dict[str, float] = {
+            "rouge1": float(r.get("rouge1", 0.0)),
+            "rouge2": float(r.get("rouge2", 0.0)),
+            "rougeL": float(r.get("rougeL", 0.0)),
+        }
+        # only add what user weights asked for (others default 0 in aggregate_reward)
+        need = set(metrics_cfg.weights.keys())
+        if "em" in need:
+            from autorag_offline_search.metrics import compute_exact_match
+
+            per_metric["em"] = float(compute_exact_match(pred, refs))
+        if "qa_f1" in need:
+            from autorag_offline_search.metrics import compute_qa_f1
+
+            per_metric["qa_f1"] = float(compute_qa_f1(pred, refs))
+        reward = float(aggregate_reward(per_metric, metrics_cfg.weights))
+        if reward > best_reward:
+            best_reward = reward
+            best_pred = str(pred or "")
+            best_doc_id = str(d.doc_id or "")
+            best_ctx_preview = ctx[:200] if ctx else ""
+
+    return best_pred, best_doc_id, best_ctx_preview
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Estimate an oracle(ish) upper bound by feeding oracle context directly to the generator.")
     p.add_argument("--dataset_dir", type=str, required=True, help="Dataset dir (split or no_split layout).")
@@ -93,6 +174,15 @@ def main() -> None:
     p.add_argument("--generator_model", type=str, default="qwen3_vl_4b", help="Served model id/path (or preset: qwen3/qwen3_vl_4b).")
     p.add_argument("--generator_max_tokens", type=int, default=256, help="Output token budget (not context length).")
     p.add_argument("--allow_images", action="store_true", help="If set, attach oracle images when available (multimodal upper bound).")
+    p.add_argument(
+        "--oracle_mode",
+        type=str,
+        default="single_doc",
+        choices=["single_doc", "posthoc_bm25"],
+        help="single_doc: use best-effort single oracle doc (m2rag doc_<qid>, hotpot supporting_doc_ids if present, else answer-string match). "
+        "posthoc_bm25: retrieve top-k docs by BM25 then pick the prediction with best weighted reward (cheating upper bound approximation).",
+    )
+    p.add_argument("--oracle_k", type=int, default=10, help="When oracle_mode=posthoc_bm25, candidate docs = top-k by BM25.")
 
     p.add_argument("--metrics_weights", type=str, default="qa_f1:1,em:1", help="Weight spec, e.g. qa_f1:1,em:1")
     p.add_argument("--bertscore_model", type=str, default="microsoft/deberta-xlarge-mnli")
@@ -162,30 +252,49 @@ def main() -> None:
 
     t0 = time.time()
     printed = 0
+    bm25 = None
+    if str(args.oracle_mode).strip().lower() == "posthoc_bm25":
+        # Build BM25 over whole-doc texts (no chunking) for oracle candidate selection.
+        bm25 = BM25Index([str(d.contents or "") for d in docs])
     for ex in qas:
-        odoc = _oracle_doc_for_qa(docs, ex)
-        if odoc is None:
+        odoc = None
+        model = resolve_model(str(args.generator_model))
+        oracle_mode = str(args.oracle_mode).strip().lower()
+        if oracle_mode == "posthoc_bm25" and bm25 is not None:
+            pred, best_doc_id, best_ctx_preview = _posthoc_bm25_best_of_k(
+                docs=docs,
+                bm25=bm25,
+                qa=ex,
+                k=int(args.oracle_k),
+                model=model,
+                llm_base_url=str(args.llm_base_url),
+                max_tokens=int(args.generator_max_tokens),
+                metrics_cfg=mcfg,
+            )
             ctx = ""
             imgs = []
         else:
-            ctx, imgs = _oracle_context_and_images(odoc, allow_images=bool(args.allow_images))
-
-        model = resolve_model(str(args.generator_model))
-        if imgs:
-            pred = generate_answer_with_images(
-                query=str(ex.query),
-                context=ctx,
-                image_paths=imgs,
-                cfg=GeneratorConfig(model=model, max_tokens=int(args.generator_max_tokens)),
-                llm_base_url=str(args.llm_base_url),
-            )
-        else:
-            pred = generate_answer(
-                query=str(ex.query),
-                context=ctx,
-                cfg=GeneratorConfig(model=model, max_tokens=int(args.generator_max_tokens)),
-                llm_base_url=str(args.llm_base_url),
-            )
+            odoc = _oracle_doc_for_qa(docs, ex)
+            if odoc is None:
+                ctx = ""
+                imgs = []
+            else:
+                ctx, imgs = _oracle_context_and_images(odoc, allow_images=bool(args.allow_images))
+            if imgs:
+                pred = generate_answer_with_images(
+                    query=str(ex.query),
+                    context=ctx,
+                    image_paths=imgs,
+                    cfg=GeneratorConfig(model=model, max_tokens=int(args.generator_max_tokens)),
+                    llm_base_url=str(args.llm_base_url),
+                )
+            else:
+                pred = generate_answer(
+                    query=str(ex.query),
+                    context=ctx,
+                    cfg=GeneratorConfig(model=model, max_tokens=int(args.generator_max_tokens)),
+                    llm_base_url=str(args.llm_base_url),
+                )
 
         refs = list(ex.generation_gt or [])
         r = compute_rouge(pred, refs)
@@ -249,7 +358,10 @@ def main() -> None:
             "query": ex.query,
             "pred": pred,
             "refs": refs,
+            "oracle_mode": oracle_mode,
             "oracle_doc_id": (odoc.doc_id if odoc is not None else None),
+            "oracle_best_doc_id": (best_doc_id if oracle_mode == "posthoc_bm25" else None),
+            "oracle_best_ctx_preview": (best_ctx_preview if oracle_mode == "posthoc_bm25" else None),
             "used_images": imgs,
         }
         if m2 is not None:

@@ -7,10 +7,12 @@ from ..modules.prompts import PRUNER_PROMPTS, REWRITER_PROMPTS
 
 
 MODEL_PRESETS: Dict[str, str] = {
-    # Keep qwen3 as the only "known good" local path from the original repo.
-    "qwen3": "/home/xwh/models/Qwen3-4B-Instruct-2507",
-    # Multimodal generator (example local path). Users can override freely via config/CLI.
-    "qwen3_vl_4b": "/home/xwh/models/Qwen3-VL-4B-Instruct",
+    # IMPORTANT:
+    # These presets should map to **served model names** for OpenAI-compatible endpoints (vLLM),
+    # not local filesystem paths. The vLLM `--served-model-name` can be arbitrary; users should
+    # set config values to match what their server exposes under GET /v1/models.
+    "qwen3": "qwen3",
+    "qwen3_vl_4b": "qwen3_vl_4b",
 }
 
 
@@ -81,7 +83,13 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
         )
 
     rewriter_enabled = bool(c.get("rewriter_enabled", False))
-    rewriter_model = str(c.get("rewriter_model", "qwen3"))
+    # Make defaults pipeline-aware to avoid sampling incompatible model ids.
+    # - common     : qwen3
+    # - multimodal : qwen3_vl_4b
+    if "rewriter_model" in c and str(c.get("rewriter_model") or "").strip():
+        rewriter_model = str(c.get("rewriter_model"))
+    else:
+        rewriter_model = "qwen3_vl_4b" if pipeline == "multimodal" else "qwen3"
     if "rewriter_prompt_id" in c and str(c.get("rewriter_prompt_id") or "").strip():
         pid = str(c.get("rewriter_prompt_id"))
         rewriter_prompt = str(REWRITER_PROMPTS.get(pid, REWRITER_PROMPTS["rewrite_v1"]))
@@ -152,7 +160,11 @@ def normalize_config(cfg: Dict) -> NormalizedConfig:
     rerank_topk = int(c.get("rerank_topk", min(10, retriever_topk)))
 
     pruner_enabled = bool(c.get("pruner_enabled", False))
-    pruner_model = str(c.get("pruner_model", "qwen3"))
+    # Pipeline-aware default (same rationale as rewriter_model).
+    if "pruner_model" in c and str(c.get("pruner_model") or "").strip():
+        pruner_model = str(c.get("pruner_model"))
+    else:
+        pruner_model = "qwen3_vl_4b" if pipeline == "multimodal" else "qwen3"
     pruner_mode = str(c.get("pruner_mode", "select")).strip().lower()
     if pruner_mode not in {"select", "compress"}:
         pruner_mode = "select"

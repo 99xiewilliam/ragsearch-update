@@ -2,16 +2,21 @@ base:
   # 1. 环境与基础
   pipeline: multimodal
   llm_base_url: "http://localhost:9000/v1"
-  generator_model: "/home/xwh/models/Qwen3-VL-7B-Instruct"
+  # vLLM /v1/models 的真实 id（必须严格一致，否则 404）
+  rewriter_model: "/home/xwh/models/Qwen3-VL-4B-Instruct"
+  pruner_model: "/home/xwh/models/Qwen3-VL-4B-Instruct"
+  generator_model: "/home/xwh/models/Qwen3-VL-4B-Instruct"
   generator_max_tokens: 128
   module_logs: true
 
   # 2. 并发设置 (视觉模型并发较小)
   rewriter_max_inflight: 16
   pruner_max_inflight: 8
-  generator_max_inflight: 2
+  generator_max_inflight: 8
 
 space:
+  # 固定 pipeline，避免采样到 common 导致 model id 不匹配
+  pipeline: ["multimodal"]
   # 3. 核心逻辑开关
   rewriter_enabled: [false, true]
   rewriter_prompt_id: ["rewrite_v1", "rewrite_v2_keywords"]
@@ -19,12 +24,12 @@ space:
   chunking_enabled: [false, true]
   chunk_size: [256, 512]
   
-  embedder_model: ["BAAI/bge-m3", "intfloat/e5-large-v2"]
+  embedder_model: ["/home/xwh/models/Qwen3-VL-Embedding-2B"]
   retriever_topk: [3, 5, 10]
   bm25_weight: [0.0, 0.5, 1.0]
   
   reranker_enabled: [false, true]
-  reranker_model: ["none", "cross-encoder/ms-marco-MiniLM-L-6-v2"]
+  reranker_model: ["/home/xwh/models/Qwen3-VL-Reranker-2B"]
   rerank_topk: [3, 5, 10]
   
   pruner_enabled: [true]

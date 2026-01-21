@@ -41,3 +41,11 @@ class UnifiedRag:
             return await self._pipe.answer_with_trace_async(query, llm_sems=llm_sems)  # type: ignore[no-any-return]
         return self.answer_with_trace(query)
 
+    def timing_summary(self, *, reset: bool = False) -> Dict[str, Dict[str, float]]:
+        """
+        Return aggregated timing stats from the underlying pipeline.
+        """
+        if hasattr(self._pipe, "timing_summary"):
+            return self._pipe.timing_summary(reset=reset)  # type: ignore[no-any-return]
+        return {}
+

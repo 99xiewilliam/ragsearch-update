@@ -24,7 +24,7 @@ space:
   bm25_weight: [0.0, 0.5, 1.0]
   
   reranker_enabled: [false, true]
-  reranker_model: ["none", "cross-encoder/ms-marco-MiniLM-L-6-v2"]
+  reranker_model: ["cross-encoder/ms-marco-MiniLM-L-6-v2"]
   rerank_topk: [3, 5, 10]
   
   pruner_enabled: [true]

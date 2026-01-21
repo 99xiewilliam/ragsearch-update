@@ -88,8 +88,14 @@ class MultiModalRagPipeline(CommonRagPipeline):
         """
         Override to keep chunk<->image association for multimodal embedding.
         """
+        profile = bool(self.raw_config.get("timing_profile", False))
+        def _p(msg: str) -> None:
+            if profile:
+                print(msg)
+
         self._corpus_fp = self._corpus_fingerprint_mm()
         log(self.cfg, f"[MM:init] dataset_id={self.dataset_id} cache_dir={self.cache_dir}")
+        _p(f"[PROFILE:init] pipeline=multimodal dataset_id={self.dataset_id} cache_dir={self.cache_dir}")
 
         chunk_part = {
             "chunking_method": self.cfg.chunking_method,
@@ -128,51 +134,59 @@ class MultiModalRagPipeline(CommonRagPipeline):
 
         # chunks (+ images)
         if os.path.exists(chunks_path):
-            log(self.cfg, f"[MM:chunking] load cached chunks: {chunks_path}")
-            with open(chunks_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    o = json.loads(line)
-                    t = str(o.get("text", "") or "").strip()
-                    if not t:
-                        continue
-                    self._chunk_texts.append(t)
-                    imgs = o.get("images", []) or []
-                    if isinstance(imgs, list):
-                        self._chunk_images.append([str(x) for x in imgs if str(x).strip()])
-                    else:
-                        self._chunk_images.append([])
-        else:
-            log(
-                self.cfg,
-                f"[MM:chunking] build chunks enabled={self.cfg.chunking_enabled} method={self.cfg.chunking_method} "
-                f"size={self.cfg.chunk_size} overlap={self.cfg.chunk_overlap} min_words={self.cfg.min_chunk_words}",
-            )
-            if self.cfg.chunking_enabled:
-                ch_cfg = ChunkingConfig(
-                    method=self.cfg.chunking_method,
-                    chunk_size=self.cfg.chunk_size,
-                    chunk_overlap=self.cfg.chunk_overlap,
-                    min_chunk_words=self.cfg.min_chunk_words,
-                    token_model=self.cfg.embedder_model,
-                )
-                for d in self.docs:
-                    imgs = extract_image_paths(d.metadata)
-                    parts = [t for t in chunk_docs([d], cfg=ch_cfg) if t.strip()]
-                    for t in parts:
+            _p(f"[PROFILE:init] mm_chunking:load_cached path={chunks_path}")
+            with self._timing.timer("init.chunking.load_cached"):
+                log(self.cfg, f"[MM:chunking] load cached chunks: {chunks_path}")
+                with open(chunks_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        o = json.loads(line)
+                        t = str(o.get("text", "") or "").strip()
+                        if not t:
+                            continue
                         self._chunk_texts.append(t)
-                        self._chunk_images.append(imgs)
-            else:
-                for d in self.docs:
-                    t = str(d.contents or "").strip()
-                    if not t:
-                        continue
-                    self._chunk_texts.append(t)
-                    self._chunk_images.append(extract_image_paths(d.metadata))
+                        imgs = o.get("images", []) or []
+                        if isinstance(imgs, list):
+                            self._chunk_images.append([str(x) for x in imgs if str(x).strip()])
+                        else:
+                            self._chunk_images.append([])
+            _p(f"[PROFILE:init] mm_chunking:done chunks={len(self._chunk_texts)} (cached)")
+        else:
+            _p(f"[PROFILE:init] mm_chunking:build enabled={self.cfg.chunking_enabled} -> path={chunks_path}")
+            with self._timing.timer("init.chunking.build"):
+                log(
+                    self.cfg,
+                    f"[MM:chunking] build chunks enabled={self.cfg.chunking_enabled} method={self.cfg.chunking_method} "
+                    f"size={self.cfg.chunk_size} overlap={self.cfg.chunk_overlap} min_words={self.cfg.min_chunk_words}",
+                )
+                if self.cfg.chunking_enabled:
+                    ch_cfg = ChunkingConfig(
+                        method=self.cfg.chunking_method,
+                        chunk_size=self.cfg.chunk_size,
+                        chunk_overlap=self.cfg.chunk_overlap,
+                        min_chunk_words=self.cfg.min_chunk_words,
+                        token_model=self.cfg.embedder_model,
+                    )
+                    for d in self.docs:
+                        imgs = extract_image_paths(d.metadata)
+                        parts = [t for t in chunk_docs([d], cfg=ch_cfg) if t.strip()]
+                        for t in parts:
+                            self._chunk_texts.append(t)
+                            self._chunk_images.append(imgs)
+                else:
+                    for d in self.docs:
+                        t = str(d.contents or "").strip()
+                        if not t:
+                            continue
+                        self._chunk_texts.append(t)
+                        self._chunk_images.append(extract_image_paths(d.metadata))
 
-            with open(chunks_path, "w", encoding="utf-8") as f:
-                for i, t in enumerate(self._chunk_texts):
-                    f.write(json.dumps({"i": i, "text": t, "images": self._chunk_images[i]}, ensure_ascii=False) + "\n")
-            log(self.cfg, f"[MM:chunking] wrote chunks: {chunks_path}")
+                with open(chunks_path, "w", encoding="utf-8") as f:
+                    for i, t in enumerate(self._chunk_texts):
+                        f.write(
+                            json.dumps({"i": i, "text": t, "images": self._chunk_images[i]}, ensure_ascii=False) + "\n"
+                        )
+                log(self.cfg, f"[MM:chunking] wrote chunks: {chunks_path}")
+            _p(f"[PROFILE:init] mm_chunking:done chunks={len(self._chunk_texts)} (built)")
 
         log(self.cfg, f"[MM:chunking] chunks={len(self._chunk_texts)} images_chunks={sum(1 for x in self._chunk_images if x)}")
         images_chunks = sum(1 for x in self._chunk_images if x)
@@ -196,41 +210,57 @@ class MultiModalRagPipeline(CommonRagPipeline):
         if self.cfg.embedding_enabled and self.cfg.retriever in {"cosine", "hybrid"}:
             log(self.cfg, f"[MM:embedding] enabled model={self.cfg.embedder_model}")
             if os.path.exists(emb_path):
-                log(self.cfg, f"[MM:embedding] load cached embeddings: {emb_path}")
-                emb = np.load(emb_path).astype(np.float32)
+                _p(f"[PROFILE:init] mm_embedding:load_cached path={emb_path}")
+                with self._timing.timer("init.embedding.load_cached"):
+                    log(self.cfg, f"[MM:embedding] load cached embeddings: {emb_path}")
+                    emb = np.load(emb_path).astype(np.float32)
+                _p(f"[PROFILE:init] mm_embedding:done (cached) shape={getattr(emb,'shape',None)}")
             else:
-                log(self.cfg, f"[MM:embedding] compute embeddings for {len(self._chunk_texts)} chunks (may take time)...")
-                # Multimodal embedders:
-                # - CLIP: image/text encoder
-                # - Qwen3-VL-Embedding: unified multimodal embedding model
-                if is_probably_clip_model(self.cfg.embedder_model) or ("qwen3-vl-embedding" in str(self.cfg.embedder_model).lower()):
-                    emb = embed_mm_chunks(model_name=self.cfg.embedder_model, chunk_texts=self._chunk_texts, chunk_images=self._chunk_images)
-                else:
-                    emb = embed_texts(self.cfg.embedder_model, self._chunk_texts).astype(np.float32)
-                np.save(emb_path, emb)
-                log(self.cfg, f"[MM:embedding] saved embeddings: {emb_path}")
+                _p(f"[PROFILE:init] mm_embedding:compute model={self.cfg.embedder_model} n_chunks={len(self._chunk_texts)} -> path={emb_path}")
+                with self._timing.timer("init.embedding.compute"):
+                    log(self.cfg, f"[MM:embedding] compute embeddings for {len(self._chunk_texts)} chunks (may take time)...")
+                    # Multimodal embedders:
+                    # - CLIP: image/text encoder
+                    # - Qwen3-VL-Embedding: unified multimodal embedding model
+                    if is_probably_clip_model(self.cfg.embedder_model) or ("qwen3-vl-embedding" in str(self.cfg.embedder_model).lower()):
+                        emb = embed_mm_chunks(
+                            model_name=self.cfg.embedder_model, chunk_texts=self._chunk_texts, chunk_images=self._chunk_images
+                        )
+                    else:
+                        emb = embed_texts(self.cfg.embedder_model, self._chunk_texts).astype(np.float32)
+                    np.save(emb_path, emb)
+                    log(self.cfg, f"[MM:embedding] saved embeddings: {emb_path}")
+                _p(f"[PROFILE:init] mm_embedding:done (computed) shape={getattr(emb,'shape',None)}")
             self._chunk_emb_raw = emb
             chroma_dir = os.path.join(self.cache_dir, f"mm_chroma_{embed_key}")
-            self._vector_index = build_vector_index(
-                prefer_chroma=True,
-                persist_dir=chroma_dir,
-                collection_name="chunks",
-                embeddings=emb,
-                documents=self._chunk_texts,
-            )
+            _p(f"[PROFILE:init] mm_vector_index:build dir={chroma_dir}")
+            with self._timing.timer("init.vector_index.build"):
+                self._vector_index = build_vector_index(
+                    prefer_chroma=True,
+                    persist_dir=chroma_dir,
+                    collection_name="chunks",
+                    embeddings=emb,
+                    documents=self._chunk_texts,
+                )
             log(self.cfg, f"[MM:vector_index] {type(self._vector_index).__name__} dir={chroma_dir}")
+            _p(f"[PROFILE:init] mm_vector_index:done type={type(self._vector_index).__name__}")
         else:
             self._chunk_emb_raw = None
             self._vector_index = None
             log(self.cfg, f"[MM:embedding] disabled or not needed (retriever={self.cfg.retriever})")
+            _p(f"[PROFILE:init] mm_embedding:skip retriever={self.cfg.retriever} embedding_enabled={self.cfg.embedding_enabled}")
 
         # bm25 (only needed for bm25/hybrid)
         if self.cfg.retriever in {"bm25", "hybrid"}:
-            self._bm25 = BM25Index(self._chunk_texts)
+            _p(f"[PROFILE:init] mm_bm25:build chunks={len(self._chunk_texts)}")
+            with self._timing.timer("init.bm25.build"):
+                self._bm25 = BM25Index(self._chunk_texts)
             log(self.cfg, f"[MM:bm25] enabled (chunks={len(self._chunk_texts)})")
+            _p("[PROFILE:init] mm_bm25:done")
         else:
             self._bm25 = None
             log(self.cfg, f"[MM:bm25] disabled (retriever={self.cfg.retriever})")
+            _p(f"[PROFILE:init] mm_bm25:skip retriever={self.cfg.retriever}")
 
     def answer(self, query: str) -> str:
         """
@@ -247,35 +277,39 @@ class MultiModalRagPipeline(CommonRagPipeline):
         log(self.cfg, f"[COMMON:rewriter] enabled={self.cfg.rewriter_enabled} model={self.cfg.rewriter_model} max_tokens={self.cfg.rewriter_max_tokens}")
         if self.cfg.rewriter_enabled:
             log_kv(self.cfg, prefix="[COMMON:rewriter] ", key="prompt", value=self.cfg.rewriter_prompt, limit=240)
-        q = rewrite_query(
-            query=q0,
-            cfg=RewriterConfig(
-                enabled=self.cfg.rewriter_enabled,
-                model=self.cfg.rewriter_model,
-                prompt=self.cfg.rewriter_prompt,
-                max_tokens=self.cfg.rewriter_max_tokens,
-            ),
-            llm_base_url=self.cfg.llm_base_url,
-            model_resolver=resolve_model,
-        )
+        with self._timing.timer("rewriter.sync"):
+            q = rewrite_query(
+                query=q0,
+                cfg=RewriterConfig(
+                    enabled=self.cfg.rewriter_enabled,
+                    model=self.cfg.rewriter_model,
+                    prompt=self.cfg.rewriter_prompt,
+                    max_tokens=self.cfg.rewriter_max_tokens,
+                ),
+                llm_base_url=self.cfg.llm_base_url,
+                model_resolver=resolve_model,
+            )
         log_kv(self.cfg, prefix="[COMMON:rewriter] ", key="rewritten_query", value=q, limit=200)
 
         q_emb = None
         if self._vector_index is not None:
             log(self.cfg, f"[COMMON:embed_query] model={self.cfg.embedder_model}")
             if is_probably_clip_model(self.cfg.embedder_model) or ("qwen3-vl-embedding" in str(self.cfg.embedder_model).lower()):
-                q_emb = embed_mm_query(self.cfg.embedder_model, q).astype(np.float32)
+                with self._timing.timer("embed_mm_query"):
+                    q_emb = embed_mm_query(self.cfg.embedder_model, q).astype(np.float32)
             else:
-                q_emb = embed_query(self.cfg.embedder_model, q).astype(np.float32)
+                with self._timing.timer("embed_query"):
+                    q_emb = embed_query(self.cfg.embedder_model, q).astype(np.float32)
 
         log(self.cfg, f"[COMMON:retriever] method={self.cfg.retriever} topk={self.cfg.retriever_topk} hybrid_alpha={self.cfg.hybrid_alpha}")
-        idx = retrieve_indices(
-            cfg=RetrievalConfig(method=self.cfg.retriever, topk=self.cfg.retriever_topk, hybrid_alpha=self.cfg.hybrid_alpha),
-            query=q,
-            vector_index=self._vector_index,
-            query_emb=q_emb,
-            bm25=self._bm25,
-        )
+        with self._timing.timer("retrieve"):
+            idx = retrieve_indices(
+                cfg=RetrievalConfig(method=self.cfg.retriever, topk=self.cfg.retriever_topk, hybrid_alpha=self.cfg.hybrid_alpha),
+                query=q,
+                vector_index=self._vector_index,
+                query_emb=q_emb,
+                bm25=self._bm25,
+            )
         log(self.cfg, f"[COMMON:retriever] retrieved_indices={idx[:10]} (n={len(idx)})")
         if not idx:
             return ""
@@ -287,15 +321,17 @@ class MultiModalRagPipeline(CommonRagPipeline):
             log(self.cfg, f"[COMMON:reranker] enabled model={self.cfg.reranker_model} topk={self.cfg.rerank_topk}")
             try:
                 if "Qwen3-VL-Reranker" in str(self.cfg.reranker_model) or "/Qwen3-VL-Reranker" in str(self.cfg.reranker_model):
-                    ridx = rerank_multimodal(
-                        model_name=self.cfg.reranker_model,
-                        query=q,
-                        doc_texts=docs,
-                        doc_images=[self._chunk_images[i] for i in idx] if hasattr(self, "_chunk_images") else [[] for _ in idx],
-                        topk=self.cfg.rerank_topk,
-                    )
+                    with self._timing.timer("rerank.multimodal.sync"):
+                        ridx = rerank_multimodal(
+                            model_name=self.cfg.reranker_model,
+                            query=q,
+                            doc_texts=docs,
+                            doc_images=[self._chunk_images[i] for i in idx] if hasattr(self, "_chunk_images") else [[] for _ in idx],
+                            topk=self.cfg.rerank_topk,
+                        )
                 else:
-                    ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
+                    with self._timing.timer("rerank.sync"):
+                        ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
                 chosen_chunk_idx = [idx[i] for i in ridx]
                 final = [docs[i] for i in ridx]
                 log(self.cfg, f"[COMMON:reranker] reranked_indices={ridx[:10]} (n={len(ridx)})")
@@ -328,19 +364,20 @@ class MultiModalRagPipeline(CommonRagPipeline):
         if self.cfg.pruner_enabled:
             log_kv(self.cfg, prefix="[COMMON:pruner] ", key="prompt", value=self.cfg.pruner_prompt, limit=240)
             log(self.cfg, f"[COMMON:pruner] input_chunks={len(final)}")
-        final = prune_chunks(
-            query=q,
-            chunks=final,
-            cfg=PrunerConfig(
-                enabled=self.cfg.pruner_enabled,
-                model=self.cfg.pruner_model,
-                prompt=self.cfg.pruner_prompt,
-                max_tokens=self.cfg.pruner_max_tokens,
-                mode=self.cfg.pruner_mode,
-            ),
-            llm_base_url=self.cfg.llm_base_url,
-            model_resolver=resolve_model,
-        )
+        with self._timing.timer("pruner.sync"):
+            final = prune_chunks(
+                query=q,
+                chunks=final,
+                cfg=PrunerConfig(
+                    enabled=self.cfg.pruner_enabled,
+                    model=self.cfg.pruner_model,
+                    prompt=self.cfg.pruner_prompt,
+                    max_tokens=self.cfg.pruner_max_tokens,
+                    mode=self.cfg.pruner_mode,
+                ),
+                llm_base_url=self.cfg.llm_base_url,
+                model_resolver=resolve_model,
+            )
         log(self.cfg, f"[COMMON:pruner] final_chunks={len(final)}")
         if final:
             preview = "\n\n---\n\n".join(final[:3])  # Show first 3 chunks
@@ -352,20 +389,22 @@ class MultiModalRagPipeline(CommonRagPipeline):
         log(self.cfg, f"[COMMON:generator] model={self.cfg.generator_model} max_tokens={self.cfg.generator_max_tokens}")
         log_kv(self.cfg, prefix="[COMMON:generator] ", key="context_preview", value=ctx, limit=240)
         if images:
-            gen = generate_answer_with_images(
-                query=q0,
-                context=ctx,
-                image_paths=images,
-                cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
-                llm_base_url=self.cfg.llm_base_url,
-            )
+            with self._timing.timer("generator.sync_with_images"):
+                gen = generate_answer_with_images(
+                    query=q0,
+                    context=ctx,
+                    image_paths=images,
+                    cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
+                    llm_base_url=self.cfg.llm_base_url,
+                )
         else:
-            gen = generate_answer(
-                query=q0,
-                context=ctx,
-                cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
-                llm_base_url=self.cfg.llm_base_url,
-            )
+            with self._timing.timer("generator.sync"):
+                gen = generate_answer(
+                    query=q0,
+                    context=ctx,
+                    cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
+                    llm_base_url=self.cfg.llm_base_url,
+                )
         log_kv(self.cfg, prefix="[COMMON:generator] ", key="answer", value=gen, limit=240)
         return gen
 
@@ -379,33 +418,37 @@ class MultiModalRagPipeline(CommonRagPipeline):
         out: Dict = {"query": query, "pipeline": "multimodal"}
         try:
             q0 = str(query or "")
-            q = rewrite_query(
-                query=q0,
-                cfg=RewriterConfig(
-                    enabled=self.cfg.rewriter_enabled,
-                    model=self.cfg.rewriter_model,
-                    prompt=self.cfg.rewriter_prompt,
-                    max_tokens=self.cfg.rewriter_max_tokens,
-                ),
-                llm_base_url=self.cfg.llm_base_url,
-                model_resolver=resolve_model,
-            )
+            with self._timing.timer("rewriter.sync"):
+                q = rewrite_query(
+                    query=q0,
+                    cfg=RewriterConfig(
+                        enabled=self.cfg.rewriter_enabled,
+                        model=self.cfg.rewriter_model,
+                        prompt=self.cfg.rewriter_prompt,
+                        max_tokens=self.cfg.rewriter_max_tokens,
+                    ),
+                    llm_base_url=self.cfg.llm_base_url,
+                    model_resolver=resolve_model,
+                )
             out["rewritten_query"] = q
 
             q_emb = None
             if self._vector_index is not None:
                 if is_probably_clip_model(self.cfg.embedder_model) or ("qwen3-vl-embedding" in str(self.cfg.embedder_model).lower()):
-                    q_emb = embed_mm_query(self.cfg.embedder_model, q).astype(np.float32)
+                    with self._timing.timer("embed_mm_query"):
+                        q_emb = embed_mm_query(self.cfg.embedder_model, q).astype(np.float32)
                 else:
-                    q_emb = embed_query(self.cfg.embedder_model, q).astype(np.float32)
+                    with self._timing.timer("embed_query"):
+                        q_emb = embed_query(self.cfg.embedder_model, q).astype(np.float32)
 
-            idx = retrieve_indices(
-                cfg=RetrievalConfig(method=self.cfg.retriever, topk=self.cfg.retriever_topk, hybrid_alpha=self.cfg.hybrid_alpha),
-                query=q,
-                vector_index=self._vector_index,
-                query_emb=q_emb,
-                bm25=self._bm25,
-            )
+            with self._timing.timer("retrieve"):
+                idx = retrieve_indices(
+                    cfg=RetrievalConfig(method=self.cfg.retriever, topk=self.cfg.retriever_topk, hybrid_alpha=self.cfg.hybrid_alpha),
+                    query=q,
+                    vector_index=self._vector_index,
+                    query_emb=q_emb,
+                    bm25=self._bm25,
+                )
             out["retrieved_indices"] = idx
             out["retrieved"] = [
                 {"i": int(i), "text": self._chunk_texts[i], "images": self._chunk_images[i] if hasattr(self, "_chunk_images") else []}
@@ -417,15 +460,17 @@ class MultiModalRagPipeline(CommonRagPipeline):
             if self.cfg.reranker_enabled:
                 try:
                     if "Qwen3-VL-Reranker" in str(self.cfg.reranker_model) or "/Qwen3-VL-Reranker" in str(self.cfg.reranker_model):
-                        ridx = rerank_multimodal(
-                            model_name=self.cfg.reranker_model,
-                            query=q,
-                            doc_texts=docs,
-                            doc_images=[self._chunk_images[i] for i in idx] if hasattr(self, "_chunk_images") else [[] for _ in idx],
-                            topk=self.cfg.rerank_topk,
-                        )
+                        with self._timing.timer("rerank.multimodal.sync"):
+                            ridx = rerank_multimodal(
+                                model_name=self.cfg.reranker_model,
+                                query=q,
+                                doc_texts=docs,
+                                doc_images=[self._chunk_images[i] for i in idx] if hasattr(self, "_chunk_images") else [[] for _ in idx],
+                                topk=self.cfg.rerank_topk,
+                            )
                     else:
-                        ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
+                        with self._timing.timer("rerank.sync"):
+                            ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
                     chosen_chunk_idx = [idx[i] for i in ridx]
                     final = [docs[i] for i in ridx]
                     out["reranked_indices"] = ridx
@@ -454,35 +499,38 @@ class MultiModalRagPipeline(CommonRagPipeline):
             images = images_uniq[:2]
             out["used_images"] = images
 
-            pruned = prune_chunks(
-                query=q,
-                chunks=final,
-                cfg=PrunerConfig(
-                    enabled=self.cfg.pruner_enabled,
-                    model=self.cfg.pruner_model,
-                    prompt=self.cfg.pruner_prompt,
-                    max_tokens=self.cfg.pruner_max_tokens,
-                ),
-                llm_base_url=self.cfg.llm_base_url,
-                model_resolver=resolve_model,
-            )
+            with self._timing.timer("pruner.sync"):
+                pruned = prune_chunks(
+                    query=q,
+                    chunks=final,
+                    cfg=PrunerConfig(
+                        enabled=self.cfg.pruner_enabled,
+                        model=self.cfg.pruner_model,
+                        prompt=self.cfg.pruner_prompt,
+                        max_tokens=self.cfg.pruner_max_tokens,
+                    ),
+                    llm_base_url=self.cfg.llm_base_url,
+                    model_resolver=resolve_model,
+                )
             out["final_chunks"] = pruned[: min(10, len(pruned))]
             ctx = "\n\n---\n\n".join(pruned)
             if images:
-                ans = generate_answer_with_images(
-                    query=q0,
-                    context=ctx,
-                    image_paths=images,
-                    cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
-                    llm_base_url=self.cfg.llm_base_url,
-                )
+                with self._timing.timer("generator.sync_with_images"):
+                    ans = generate_answer_with_images(
+                        query=q0,
+                        context=ctx,
+                        image_paths=images,
+                        cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
+                        llm_base_url=self.cfg.llm_base_url,
+                    )
             else:
-                ans = generate_answer(
-                    query=q0,
-                    context=ctx,
-                    cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
-                    llm_base_url=self.cfg.llm_base_url,
-                )
+                with self._timing.timer("generator.sync"):
+                    ans = generate_answer(
+                        query=q0,
+                        context=ctx,
+                        cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
+                        llm_base_url=self.cfg.llm_base_url,
+                    )
             out["answer"] = ans
         except Exception as e:
             out["error"] = repr(e)
@@ -494,33 +542,37 @@ class MultiModalRagPipeline(CommonRagPipeline):
         Async version of answer() for multimodal pipeline.
         """
         q0 = str(query or "")
-        q = await rewrite_query_async(
-            query=q0,
-            cfg=RewriterConfig(
-                enabled=self.cfg.rewriter_enabled,
-                model=self.cfg.rewriter_model,
-                prompt=self.cfg.rewriter_prompt,
-                max_tokens=self.cfg.rewriter_max_tokens,
-            ),
-            llm_base_url=self.cfg.llm_base_url,
-            model_resolver=resolve_model,
-            semaphore=(llm_sems or {}).get("rewriter"),
-        )
+        with self._timing.timer("rewriter.async"):
+            q = await rewrite_query_async(
+                query=q0,
+                cfg=RewriterConfig(
+                    enabled=self.cfg.rewriter_enabled,
+                    model=self.cfg.rewriter_model,
+                    prompt=self.cfg.rewriter_prompt,
+                    max_tokens=self.cfg.rewriter_max_tokens,
+                ),
+                llm_base_url=self.cfg.llm_base_url,
+                model_resolver=resolve_model,
+                semaphore=(llm_sems or {}).get("rewriter"),
+            )
 
         q_emb = None
         if self._vector_index is not None:
             if is_probably_clip_model(self.cfg.embedder_model) or ("qwen3-vl-embedding" in str(self.cfg.embedder_model).lower()):
-                q_emb = embed_mm_query(self.cfg.embedder_model, q).astype(np.float32)
+                with self._timing.timer("embed_mm_query"):
+                    q_emb = embed_mm_query(self.cfg.embedder_model, q).astype(np.float32)
             else:
-                q_emb = embed_query(self.cfg.embedder_model, q).astype(np.float32)
+                with self._timing.timer("embed_query"):
+                    q_emb = embed_query(self.cfg.embedder_model, q).astype(np.float32)
 
-        idx = retrieve_indices(
-            cfg=RetrievalConfig(method=self.cfg.retriever, topk=self.cfg.retriever_topk, hybrid_alpha=self.cfg.hybrid_alpha),
-            query=q,
-            vector_index=self._vector_index,
-            query_emb=q_emb,
-            bm25=self._bm25,
-        )
+        with self._timing.timer("retrieve"):
+            idx = retrieve_indices(
+                cfg=RetrievalConfig(method=self.cfg.retriever, topk=self.cfg.retriever_topk, hybrid_alpha=self.cfg.hybrid_alpha),
+                query=q,
+                vector_index=self._vector_index,
+                query_emb=q_emb,
+                bm25=self._bm25,
+            )
         if not idx:
             return ""
 
@@ -529,15 +581,17 @@ class MultiModalRagPipeline(CommonRagPipeline):
         if self.cfg.reranker_enabled:
             try:
                 if "Qwen3-VL-Reranker" in str(self.cfg.reranker_model) or "/Qwen3-VL-Reranker" in str(self.cfg.reranker_model):
-                    ridx = rerank_multimodal(
-                        model_name=self.cfg.reranker_model,
-                        query=q,
-                        doc_texts=docs,
-                        doc_images=[self._chunk_images[i] for i in idx] if hasattr(self, "_chunk_images") else [[] for _ in idx],
-                        topk=self.cfg.rerank_topk,
-                    )
+                    with self._timing.timer("rerank.multimodal.sync"):
+                        ridx = rerank_multimodal(
+                            model_name=self.cfg.reranker_model,
+                            query=q,
+                            doc_texts=docs,
+                            doc_images=[self._chunk_images[i] for i in idx] if hasattr(self, "_chunk_images") else [[] for _ in idx],
+                            topk=self.cfg.rerank_topk,
+                        )
                 else:
-                    ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
+                    with self._timing.timer("rerank.sync"):
+                        ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
                 chosen_chunk_idx = [idx[i] for i in ridx]
                 final = [docs[i] for i in ridx]
             except Exception:
@@ -561,39 +615,42 @@ class MultiModalRagPipeline(CommonRagPipeline):
             images_uniq.append(p)
         images = images_uniq[:2]
 
-        final = await prune_chunks_async(
-            query=q,
-            chunks=final,
-            cfg=PrunerConfig(
-                enabled=self.cfg.pruner_enabled,
-                model=self.cfg.pruner_model,
-                prompt=self.cfg.pruner_prompt,
-                max_tokens=self.cfg.pruner_max_tokens,
-                mode=self.cfg.pruner_mode,
-            ),
-            llm_base_url=self.cfg.llm_base_url,
-            model_resolver=resolve_model,
-            semaphore=(llm_sems or {}).get("pruner"),
-        )
+        with self._timing.timer("pruner.async"):
+            final = await prune_chunks_async(
+                query=q,
+                chunks=final,
+                cfg=PrunerConfig(
+                    enabled=self.cfg.pruner_enabled,
+                    model=self.cfg.pruner_model,
+                    prompt=self.cfg.pruner_prompt,
+                    max_tokens=self.cfg.pruner_max_tokens,
+                    mode=self.cfg.pruner_mode,
+                ),
+                llm_base_url=self.cfg.llm_base_url,
+                model_resolver=resolve_model,
+                semaphore=(llm_sems or {}).get("pruner"),
+            )
 
         ctx = "\n\n---\n\n".join(final)
         if images:
-            gen = await generate_answer_with_images_async(
-                query=q0,
-                context=ctx,
-                image_paths=images,
-                cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
-                llm_base_url=self.cfg.llm_base_url,
-                semaphore=(llm_sems or {}).get("generator"),
-            )
+            with self._timing.timer("generator.async_with_images"):
+                gen = await generate_answer_with_images_async(
+                    query=q0,
+                    context=ctx,
+                    image_paths=images,
+                    cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
+                    llm_base_url=self.cfg.llm_base_url,
+                    semaphore=(llm_sems or {}).get("generator"),
+                )
         else:
-            gen = await generate_answer_async(
-                query=q0,
-                context=ctx,
-                cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
-                llm_base_url=self.cfg.llm_base_url,
-                semaphore=(llm_sems or {}).get("generator"),
-            )
+            with self._timing.timer("generator.async"):
+                gen = await generate_answer_async(
+                    query=q0,
+                    context=ctx,
+                    cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
+                    llm_base_url=self.cfg.llm_base_url,
+                    semaphore=(llm_sems or {}).get("generator"),
+                )
         return gen
 
     async def answer_with_trace_async(self, query: str, *, llm_sems: Dict[str, object] | None = None) -> Dict:
@@ -603,34 +660,38 @@ class MultiModalRagPipeline(CommonRagPipeline):
         out: Dict = {"query": query, "pipeline": "multimodal"}
         try:
             q0 = str(query or "")
-            q = await rewrite_query_async(
-                query=q0,
-                cfg=RewriterConfig(
-                    enabled=self.cfg.rewriter_enabled,
-                    model=self.cfg.rewriter_model,
-                    prompt=self.cfg.rewriter_prompt,
-                    max_tokens=self.cfg.rewriter_max_tokens,
-                ),
-                llm_base_url=self.cfg.llm_base_url,
-                model_resolver=resolve_model,
-                semaphore=(llm_sems or {}).get("rewriter"),
-            )
+            with self._timing.timer("rewriter.async"):
+                q = await rewrite_query_async(
+                    query=q0,
+                    cfg=RewriterConfig(
+                        enabled=self.cfg.rewriter_enabled,
+                        model=self.cfg.rewriter_model,
+                        prompt=self.cfg.rewriter_prompt,
+                        max_tokens=self.cfg.rewriter_max_tokens,
+                    ),
+                    llm_base_url=self.cfg.llm_base_url,
+                    model_resolver=resolve_model,
+                    semaphore=(llm_sems or {}).get("rewriter"),
+                )
             out["rewritten_query"] = q
 
             q_emb = None
             if self._vector_index is not None:
                 if is_probably_clip_model(self.cfg.embedder_model) or ("qwen3-vl-embedding" in str(self.cfg.embedder_model).lower()):
-                    q_emb = embed_mm_query(self.cfg.embedder_model, q).astype(np.float32)
+                    with self._timing.timer("embed_mm_query"):
+                        q_emb = embed_mm_query(self.cfg.embedder_model, q).astype(np.float32)
                 else:
-                    q_emb = embed_query(self.cfg.embedder_model, q).astype(np.float32)
+                    with self._timing.timer("embed_query"):
+                        q_emb = embed_query(self.cfg.embedder_model, q).astype(np.float32)
 
-            idx = retrieve_indices(
-                cfg=RetrievalConfig(method=self.cfg.retriever, topk=self.cfg.retriever_topk, hybrid_alpha=self.cfg.hybrid_alpha),
-                query=q,
-                vector_index=self._vector_index,
-                query_emb=q_emb,
-                bm25=self._bm25,
-            )
+            with self._timing.timer("retrieve"):
+                idx = retrieve_indices(
+                    cfg=RetrievalConfig(method=self.cfg.retriever, topk=self.cfg.retriever_topk, hybrid_alpha=self.cfg.hybrid_alpha),
+                    query=q,
+                    vector_index=self._vector_index,
+                    query_emb=q_emb,
+                    bm25=self._bm25,
+                )
             out["retrieved_indices"] = idx
             out["retrieved"] = [
                 {"i": int(i), "text": self._chunk_texts[i], "images": self._chunk_images[i] if hasattr(self, "_chunk_images") else []}
@@ -642,15 +703,17 @@ class MultiModalRagPipeline(CommonRagPipeline):
             if self.cfg.reranker_enabled:
                 try:
                     if "Qwen3-VL-Reranker" in str(self.cfg.reranker_model) or "/Qwen3-VL-Reranker" in str(self.cfg.reranker_model):
-                        ridx = rerank_multimodal(
-                            model_name=self.cfg.reranker_model,
-                            query=q,
-                            doc_texts=docs,
-                            doc_images=[self._chunk_images[i] for i in idx] if hasattr(self, "_chunk_images") else [[] for _ in idx],
-                            topk=self.cfg.rerank_topk,
-                        )
+                        with self._timing.timer("rerank.multimodal.sync"):
+                            ridx = rerank_multimodal(
+                                model_name=self.cfg.reranker_model,
+                                query=q,
+                                doc_texts=docs,
+                                doc_images=[self._chunk_images[i] for i in idx] if hasattr(self, "_chunk_images") else [[] for _ in idx],
+                                topk=self.cfg.rerank_topk,
+                            )
                     else:
-                        ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
+                        with self._timing.timer("rerank.sync"):
+                            ridx = rerank(model_name=self.cfg.reranker_model, query=q, docs=docs, topk=self.cfg.rerank_topk)
                     chosen_chunk_idx = [idx[i] for i in ridx]
                     final = [docs[i] for i in ridx]
                     out["reranked_indices"] = ridx
@@ -679,39 +742,42 @@ class MultiModalRagPipeline(CommonRagPipeline):
             images = images_uniq[:2]
             out["used_images"] = images
 
-            pruned = await prune_chunks_async(
-                query=q,
-                chunks=final,
-                cfg=PrunerConfig(
-                    enabled=self.cfg.pruner_enabled,
-                    model=self.cfg.pruner_model,
-                    prompt=self.cfg.pruner_prompt,
-                    max_tokens=self.cfg.pruner_max_tokens,
-                    mode=self.cfg.pruner_mode,
-                ),
-                llm_base_url=self.cfg.llm_base_url,
-                model_resolver=resolve_model,
-                semaphore=(llm_sems or {}).get("pruner"),
-            )
+            with self._timing.timer("pruner.async"):
+                pruned = await prune_chunks_async(
+                    query=q,
+                    chunks=final,
+                    cfg=PrunerConfig(
+                        enabled=self.cfg.pruner_enabled,
+                        model=self.cfg.pruner_model,
+                        prompt=self.cfg.pruner_prompt,
+                        max_tokens=self.cfg.pruner_max_tokens,
+                        mode=self.cfg.pruner_mode,
+                    ),
+                    llm_base_url=self.cfg.llm_base_url,
+                    model_resolver=resolve_model,
+                    semaphore=(llm_sems or {}).get("pruner"),
+                )
             out["final_chunks"] = pruned[: min(10, len(pruned))]
             ctx = "\n\n---\n\n".join(pruned)
             if images:
-                ans = await generate_answer_with_images_async(
-                    query=q0,
-                    context=ctx,
-                    image_paths=images,
-                    cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
-                    llm_base_url=self.cfg.llm_base_url,
-                    semaphore=(llm_sems or {}).get("generator"),
-                )
+                with self._timing.timer("generator.async_with_images"):
+                    ans = await generate_answer_with_images_async(
+                        query=q0,
+                        context=ctx,
+                        image_paths=images,
+                        cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
+                        llm_base_url=self.cfg.llm_base_url,
+                        semaphore=(llm_sems or {}).get("generator"),
+                    )
             else:
-                ans = await generate_answer_async(
-                    query=q0,
-                    context=ctx,
-                    cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
-                    llm_base_url=self.cfg.llm_base_url,
-                    semaphore=(llm_sems or {}).get("generator"),
-                )
+                with self._timing.timer("generator.async"):
+                    ans = await generate_answer_async(
+                        query=q0,
+                        context=ctx,
+                        cfg=GeneratorConfig(model=resolve_model(self.cfg.generator_model), max_tokens=self.cfg.generator_max_tokens),
+                        llm_base_url=self.cfg.llm_base_url,
+                        semaphore=(llm_sems or {}).get("generator"),
+                    )
             out["answer"] = ans
         except Exception as e:
             out["error"] = repr(e)

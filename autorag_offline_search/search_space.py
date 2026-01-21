@@ -73,23 +73,28 @@ class SearchSpace:
     multimodal_pruner_model: Sequence[str] = ("qwen3_vl_4b",)
 
     def space_dict(self) -> Dict[str, Sequence]:
+        # TPE/GRPO-style samplers use this dict directly, so it must be
+        # pipeline-aware when pipeline is pinned to a single value.
+        pipe = tuple(self.pipeline)
+        pinned_mm = (len(pipe) == 1 and pipe[0] == "multimodal")
+
         return {
             "pipeline": self.pipeline,
             "rewriter_enabled": self.rewriter_enabled,
-            "rewriter_model": self.rewriter_model,
+            "rewriter_model": (self.multimodal_rewriter_model if pinned_mm else self.rewriter_model),
             "rewriter_prompt_id": self.rewriter_prompt_id,
             "chunking_enabled": self.chunking_enabled,
             "chunk_size": self.chunk_size,
             "embedding_enabled": self.embedding_enabled,
-            "embedder_model": self.embedder_model,
+            "embedder_model": (self.multimodal_embedder_model if pinned_mm else self.embedder_model),
             "retriever_topk": self.retriever_topk,
             "bm25_weight": self.bm25_weight,
             "reranker_enabled": self.reranker_enabled,
-            "reranker_model": self.reranker_model,
+            "reranker_model": (self.multimodal_reranker_model if pinned_mm else self.reranker_model),
             "rerank_topk": self.rerank_topk,
             "multimodal_metadata_enabled": self.multimodal_metadata_enabled,
             "pruner_enabled": self.pruner_enabled,
-            "pruner_model": self.pruner_model,
+            "pruner_model": (self.multimodal_pruner_model if pinned_mm else self.pruner_model),
         }
 
     def all_configs(self) -> List[Dict]:

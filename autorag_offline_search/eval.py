@@ -70,7 +70,15 @@ def evaluate_config(
     Evaluate a pipeline config on a split. Reward is weighted aggregation of metrics.
     """
     t0 = time.time()
-    rag = rag_factory(docs, config)
+    # If profiling is enabled, emit a heartbeat around pipeline construction.
+    if bool(config.get("timing_profile", False)):
+        print("[PROFILE] build_pipeline:start")
+        t_build0 = time.perf_counter()
+        rag = rag_factory(docs, config)
+        t_build1 = time.perf_counter()
+        print(f"[PROFILE] build_pipeline:done seconds={t_build1 - t_build0:.3f}")
+    else:
+        rag = rag_factory(docs, config)
 
     rouge1s, rouge2s, rougeLs = [], [], []
     meteors: List[float] = []
@@ -232,8 +240,25 @@ def evaluate_config(
 
         asyncio.run(_run_all_with_cleanup())
 
+    # Profiling heartbeat: print coarse progress even when tqdm doesn't render well (e.g. in logs).
+    profile = bool(config.get("timing_profile", False))
+    hb_every = int(config.get("timing_heartbeat_every", 10) or 0) if profile else 0
+    t_eval0 = time.perf_counter()
+
     it = tqdm(qas, desc="eval", disable=not show_progress or bool(want_async))
     for ex_idx, ex in enumerate(it, start=1):
+        if hb_every and (ex_idx == 1 or ex_idx % hb_every == 0):
+            elapsed = time.perf_counter() - t_eval0
+            msg = f"[PROFILE] eval_progress ex={ex_idx}/{len(qas)} elapsed_s={elapsed:.1f}"
+            try:
+                if hasattr(rag, "timing_summary"):
+                    ts = rag.timing_summary(reset=False)  # type: ignore[attr-defined]
+                    if isinstance(ts, dict) and ts:
+                        top = list(ts.items())[:5]
+                        msg += " top=" + ",".join(f"{k}:{v.get('seconds',0.0):.2f}s" for k, v in top)
+            except Exception:
+                pass
+            print(msg)
         if async_preds is not None:
             pred = str(async_preds[ex_idx - 1] or "")
             trace = async_traces[ex_idx - 1] if async_traces is not None else None
@@ -475,6 +500,17 @@ def evaluate_config(
     t1 = time.time()
     if dump_f is not None:
         dump_f.close()
+    # Optional profiling summary (aggregated per-module timing).
+    if bool(config.get("timing_profile", False)) and hasattr(rag, "timing_summary"):
+        try:
+            import json
+
+            ts = rag.timing_summary(reset=True)  # type: ignore[attr-defined]
+            if isinstance(ts, dict) and ts:
+                # Print regardless of module_logs/verbose gating.
+                print(f"[PROFILE] timing_summary={json.dumps(ts, ensure_ascii=False)}")
+        except Exception:
+            pass
     return EvalResult(per_metric=per_metric, weighted_reward=reward), RunStats(
         seconds=t1 - t0, qas=len(qas), chunks=0
     )

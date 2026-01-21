@@ -157,7 +157,32 @@ def load_split(dataset_dir: str, split: str) -> Tuple[List[Doc], List[QAExample]
         qid = str(r.get("qid", "")).strip()
         query = str(r.get("query", "") or "")
         generation_gt = _to_list_str(r.get("generation_gt", ""))
-        qas.append(QAExample(qid=qid, query=query, generation_gt=generation_gt))
+        # Preserve any extra QA fields (e.g., evidence labels) in metadata.
+        md = {}
+        for k in list(getattr(qa_df, "columns", [])):
+            if k in {"qid", "query", "generation_gt"}:
+                continue
+            try:
+                v = r.get(k, None)
+            except Exception:
+                v = None
+            # Convert numpy scalars/arrays to python types if possible
+            if isinstance(v, np.ndarray):
+                try:
+                    v = v.tolist()
+                except Exception:
+                    v = [str(x) for x in list(v)]
+            # Try to decode JSON strings for structured columns
+            if isinstance(v, str) and v.strip():
+                s = v.strip()
+                if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+                    try:
+                        vj = json.loads(s)
+                        v = vj
+                    except Exception:
+                        pass
+            md[k] = v
+        qas.append(QAExample(qid=qid, query=query, generation_gt=generation_gt, metadata=(md or None)))
 
     return docs, qas
 

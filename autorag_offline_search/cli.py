@@ -123,11 +123,20 @@ def _parse_args() -> argparse.Namespace:
         default="",
         help="Base URL for OpenAI-compatible endpoint (vLLM), e.g. http://localhost:9000/v1",
     )
+    # Common config overrides (convenience)
+    p.add_argument("--rewriter_model", type=str, default="", help="Override rewriter_model in base config.")
+    p.add_argument("--pruner_model", type=str, default="", help="Override pruner_model in base config.")
+    p.add_argument("--generator_model", type=str, default="", help="Override generator_model in base config.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
         "--module_logs",
         action="store_true",
         help="If set, print per-module logs inside the pipeline (rewriter/chunking/retrieval/rerank/prune/generate).",
+    )
+    p.add_argument(
+        "--timing_profile",
+        action="store_true",
+        help="If set, print aggregated timing summary per pipeline stage at the end of each evaluation call.",
     )
     p.add_argument(
         "--verbose",
@@ -187,6 +196,14 @@ def main() -> None:
     args = _parse_args()
     if args.gpus:
         os.environ["AUTORAG_GPUS"] = args.gpus
+    # Convenience: allow providing LLM endpoint via env var.
+    # This project assumes a local OpenAI-compatible endpoint (e.g. vLLM).
+    if not args.llm_base_url:
+        args.llm_base_url = (
+            os.environ.get("AUTORAG_LLM_BASE_URL", "")
+            or os.environ.get("LLM_BASE_URL", "")
+            or os.environ.get("OPENAI_BASE_URL", "")
+        )
     algos: List[str] = [a.strip() for a in (args.algo or "").split(",") if a.strip()]
     metrics_cfg = MetricsConfig(weights=parse_weights(args.metrics_weights), bertscore_model=args.bertscore_model)
 
@@ -195,6 +212,14 @@ def main() -> None:
         base_cfg = _load_yaml(args.config)
     if args.module_logs:
         base_cfg = {**base_cfg, "module_logs": True}
+    if args.timing_profile:
+        base_cfg = {**base_cfg, "timing_profile": True}
+    if args.rewriter_model:
+        base_cfg = {**base_cfg, "rewriter_model": str(args.rewriter_model)}
+    if args.pruner_model:
+        base_cfg = {**base_cfg, "pruner_model": str(args.pruner_model)}
+    if args.generator_model:
+        base_cfg = {**base_cfg, "generator_model": str(args.generator_model)}
 
     if args.dataset_dir:
         run_dataset(

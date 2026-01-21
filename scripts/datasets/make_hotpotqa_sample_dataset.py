@@ -96,11 +96,26 @@ def _iter_qas_from_examples(examples: Iterable[Dict[str, Any]]) -> List[Dict[str
         qid = str(ex.get("id") or "").strip()
         q = str(ex.get("question") or "").strip()
         a = str(ex.get("answer") or "").strip()
+        # HotPotQA provides supporting_facts {title: [...], sent_id: [...]}
+        sf = ex.get("supporting_facts") or {}
+        titles = sf.get("title") or []
+        supporting_titles = [str(t).strip() for t in list(titles) if str(t).strip()]
+        # Map titles -> our doc_id convention used in corpus: wiki::<title>
+        supporting_doc_ids = [f"wiki::{t}" for t in supporting_titles]
         if not qid:
             qid = f"hotpotqa_{len(qas)}"
         if not q:
             continue
-        qas.append({"qid": qid, "query": q, "generation_gt": [a] if a else [""]})
+        qas.append(
+            {
+                "qid": qid,
+                "query": q,
+                "generation_gt": [a] if a else [""],
+                # evidence labels (used by oracle_upper_bound.py)
+                "supporting_titles": supporting_titles,
+                "supporting_doc_ids": supporting_doc_ids,
+            }
+        )
     return qas
 
 
